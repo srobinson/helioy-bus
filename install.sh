@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETTINGS="$HOME/.claude/settings.json"
 SERVER_PATH="$SCRIPT_DIR/server/bus_server.py"
-HOOKS_DIR="$SCRIPT_DIR/hooks"
+HOOKS_DIR="$SCRIPT_DIR/plugin/hooks"
 
 echo "helioy-bus installer"
 echo "  repo:     $SCRIPT_DIR"

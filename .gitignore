@@ -1,9 +1,10 @@
 __pycache__/
+.mypy_cache/
+.nancy/
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
 *.pyc
 *.pyo
-.venv/
-.mypy_cache/
-.ruff_cache/
-.pytest_cache/
 dist/
-*.egg-info/
