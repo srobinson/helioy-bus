@@ -86,7 +86,8 @@ CONTEXT="${HEADER}
 
 ${LINES}"
 
-# Emit hook response with additionalContext
+# Emit hook response with additionalContext.
+# The || exit 0 guard ensures a python3 failure never blocks tool use.
 python3 -c "
 import json, sys
 ctx = sys.stdin.read()
@@ -96,4 +97,4 @@ print(json.dumps({
         'additionalContext': ctx,
     }
 }))
-" <<< "$CONTEXT"
+" <<< "$CONTEXT" || exit 0

@@ -313,10 +313,14 @@ def get_messages(agent_id: str = "") -> list[dict]:
 
 
 def _tmux_pane_alive(target: str) -> bool:
-    """Return True if the tmux target exists and is reachable."""
+    """Return True if the tmux target pane exists and is reachable.
+
+    Uses list-panes rather than has-session so that a dead pane in a live
+    session is correctly reported as gone.
+    """
     try:
         result = subprocess.run(
-            ["tmux", "has-session", "-t", target],
+            ["tmux", "list-panes", "-t", target],
             capture_output=True,
             timeout=3,
         )

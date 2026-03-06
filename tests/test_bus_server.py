@@ -255,3 +255,18 @@ def test_send_message_nudge_suppressed_with_flag():
 
     mock_nudge.assert_not_called()
     assert result["nudged"] is False
+
+
+def test_send_message_nudges_live_pane():
+    """nudge=True with a live pane calls _tmux_nudge and reports nudged=True."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/beta", tmux_target="main:0.0")
+
+    with patch.object(bm, "_tmux_pane_alive", return_value=True), \
+         patch.object(bm, "_tmux_nudge", return_value=True) as mock_nudge:
+        result = bm.send_message(to="beta", content="ping", nudge=True)
+
+    mock_nudge.assert_called_once_with("main:0.0")
+    assert result["nudged"] is True
+    assert "beta" in result["recipients"]

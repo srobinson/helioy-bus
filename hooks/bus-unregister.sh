@@ -24,17 +24,21 @@ if [[ ! -f "$DB_PATH" ]]; then
     exit 0
 fi
 
+# Values passed via environment variables to avoid shell injection when
+# paths contain quotes or other special characters.
+_HELIOY_DB_PATH="$DB_PATH" \
+_HELIOY_AGENT_ID="$AGENT_ID" \
 python3 - <<PYEOF || true
-import sqlite3
+import sqlite3, os
 from pathlib import Path
 
-db_path = Path("$DB_PATH")
+db_path = Path(os.environ["_HELIOY_DB_PATH"])
 if not db_path.exists():
     exit(0)
 
 conn = sqlite3.connect(str(db_path), timeout=5)
 conn.execute("PRAGMA journal_mode=WAL;")
-conn.execute("DELETE FROM agents WHERE agent_id = ?", ("$AGENT_ID",))
+conn.execute("DELETE FROM agents WHERE agent_id = ?", (os.environ["_HELIOY_AGENT_ID"],))
 conn.commit()
 conn.close()
 PYEOF

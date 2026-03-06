@@ -40,17 +40,24 @@ fi
 # Override from environment if provided
 TMUX_TARGET="${HELIOY_BUS_TMUX:-$TMUX_TARGET}"
 
-# Write directly to SQLite (no MCP server needed)
+# Write directly to SQLite (no MCP server needed).
+# Values are passed via environment variables to avoid shell injection when
+# paths contain quotes or other special characters.
+_HELIOY_BUS_DIR="$BUS_DIR" \
+_HELIOY_INBOX_BASE="$INBOX_BASE" \
+_HELIOY_AGENT_ID="$AGENT_ID" \
+_HELIOY_PWD="$PWD_EFFECTIVE" \
+_HELIOY_TMUX="$TMUX_TARGET" \
 python3 - <<PYEOF || true
-import sqlite3, os, sys
+import sqlite3, os
 from datetime import datetime, timezone
 from pathlib import Path
 
-bus_dir = Path("$BUS_DIR")
+bus_dir = Path(os.environ["_HELIOY_BUS_DIR"])
 bus_dir.mkdir(parents=True, exist_ok=True)
 
 db_path = bus_dir / "registry.db"
-inbox = Path("$INBOX_BASE") / "$AGENT_ID"
+inbox = Path(os.environ["_HELIOY_INBOX_BASE"]) / os.environ["_HELIOY_AGENT_ID"]
 inbox.mkdir(parents=True, exist_ok=True)
 
 conn = sqlite3.connect(str(db_path), timeout=5)
@@ -76,7 +83,12 @@ conn.execute(
         (agent_id, cwd, tmux_target, pid, registered_at, last_seen)
     VALUES (?, ?, ?, ?, ?, ?)
     """,
-    ("$AGENT_ID", "$PWD_EFFECTIVE", "$TMUX_TARGET", pid, now, now),
+    (
+        os.environ["_HELIOY_AGENT_ID"],
+        os.environ["_HELIOY_PWD"],
+        os.environ["_HELIOY_TMUX"],
+        pid, now, now,
+    ),
 )
 conn.commit()
 conn.close()
