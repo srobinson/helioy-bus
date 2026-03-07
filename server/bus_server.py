@@ -42,10 +42,22 @@ def _init_db(conn: sqlite3.Connection) -> None:
             cwd           TEXT NOT NULL,
             tmux_target   TEXT NOT NULL DEFAULT '',
             pid           INTEGER,
+            session_id    TEXT NOT NULL DEFAULT '',
+            profile       TEXT,
             registered_at TEXT NOT NULL,
             last_seen     TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS nudge_log (
+            agent_id  TEXT NOT NULL,
+            nudged_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_nudge_log_agent ON nudge_log(agent_id, nudged_at);
     """)
+    # Migration: add session_id column for existing databases
+    try:
+        conn.execute("ALTER TABLE agents ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # column already exists
 
 
 @contextmanager
@@ -104,6 +116,8 @@ def register_agent(
     pwd: str,
     tmux_target: str = "",
     agent_id: str = "",
+    session_id: str = "",
+    profile: dict | None = None,
 ) -> dict:
     """Register this Claude Code instance as an agent on the helioy-bus.
 
@@ -115,6 +129,13 @@ def register_agent(
         agent_id: Override the auto-derived agent ID. Defaults to
                   "{basename(pwd)}:{tmux_target}" when tmux_target is provided,
                   otherwise basename(pwd).
+        session_id: Claude Code session UUID. Set by claude-wrapper via
+                    HELIOY_SESSION_ID env var. Enables JSONL stream access.
+        profile: Optional agent profile dict with structural identity fields:
+                 owns (list of repo/crate names), consumes (list of dependencies),
+                 capabilities (list of available MCP server names),
+                 domain (list of 1-2 word expertise tags),
+                 skills (list of installed skill names).
 
     Returns:
         {"agent_id": str, "registered_at": str}
@@ -123,18 +144,23 @@ def register_agent(
         base = os.path.basename(pwd.rstrip("/")) or "unknown"
         agent_id = f"{base}:{tmux_target}" if tmux_target else base
 
+    # Pick up session_id from env if not passed directly
+    if not session_id:
+        session_id = os.environ.get("HELIOY_SESSION_ID", "")
+
     # Parent PID is the Claude Code process (we are its stdio subprocess)
     parent_pid = os.getppid()
     now = _now()
+    profile_json = json.dumps(profile) if profile else None
 
     with db() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO agents
-                (agent_id, cwd, tmux_target, pid, registered_at, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (agent_id, cwd, tmux_target, pid, session_id, profile, registered_at, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (agent_id, pwd, tmux_target, parent_pid, now, now),
+            (agent_id, pwd, tmux_target, parent_pid, session_id, profile_json, now, now),
         )
 
     # Ensure inbox directory exists
@@ -171,7 +197,17 @@ def list_agents() -> list[dict]:
                 f"DELETE FROM agents WHERE agent_id IN ({placeholders})", dead_ids
             )
 
-    return [a for a in agents if a["agent_id"] not in dead_ids]
+    result = []
+    for a in agents:
+        if a["agent_id"] in dead_ids:
+            continue
+        if a.get("profile"):
+            try:
+                a["profile"] = json.loads(a["profile"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        result.append(a)
+    return result
 
 
 @mcp.tool()
@@ -210,12 +246,45 @@ def heartbeat(agent_id: str) -> dict:
 
 # ── Mailbox tools ─────────────────────────────────────────────────────────────
 
+NUDGE_THROTTLE_SECONDS = 30  # 30 seconds
+
+
+def _nudge_allowed(agent_id: str) -> bool:
+    """Return True if the agent has not been nudged within the throttle window."""
+    cutoff = datetime.now(UTC).isoformat()
+    with db() as conn:
+        row = conn.execute(
+            "SELECT nudged_at FROM nudge_log WHERE agent_id = ? ORDER BY nudged_at DESC LIMIT 1",
+            (agent_id,),
+        ).fetchone()
+        if row is None:
+            return True
+        last = row["nudged_at"]
+        from datetime import timedelta
+        cutoff_dt = datetime.now(UTC) - timedelta(seconds=NUDGE_THROTTLE_SECONDS)
+        return last < cutoff_dt.isoformat()
+
+
+def _record_nudge(agent_id: str) -> None:
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO nudge_log (agent_id, nudged_at) VALUES (?, ?)",
+            (agent_id, _now()),
+        )
+        # Prune old entries (keep last 24h)
+        conn.execute(
+            "DELETE FROM nudge_log WHERE nudged_at < ?",
+            (datetime.now(UTC).replace(hour=0, minute=0, second=0).isoformat(),),
+        )
+
 
 @mcp.tool()
 def send_message(
     to: str,
     content: str,
     from_agent: str = "",
+    reply_to: str = "",
+    topic: str = "",
     nudge: bool = True,
 ) -> dict:
     """Send a message to another agent's mailbox.
@@ -227,7 +296,12 @@ def send_message(
         to: Recipient agent_id. Use "*" to broadcast to all registered agents.
         content: Message body (plain text or markdown).
         from_agent: Sender agent_id. Inferred from cwd basename if omitted.
+        reply_to: Address recipients should reply to. Defaults to from_agent.
+                  Set to "*" to make replies go to all agents (group thread).
+        topic: Optional thread identifier (e.g. "am-retention-2026-03-07").
+               Human-readable. Used to filter messages by topic in get_messages.
         nudge: Send tmux send-keys nudge to wake idle recipient. Default True.
+               Throttled to once per 5 minutes per recipient.
 
     Returns:
         {"message_id": str, "delivered": bool, "nudged": bool,
@@ -235,12 +309,15 @@ def send_message(
     """
     if not from_agent:
         from_agent = _self_agent_id()
+    if not reply_to:
+        reply_to = from_agent
 
     with db() as conn:
         if to == "*":
-            # Broadcast: all registered agents
+            # Broadcast: all registered agents except the sender
             rows = conn.execute(
-                "SELECT agent_id, tmux_target FROM agents"
+                "SELECT agent_id, tmux_target FROM agents WHERE agent_id != ?",
+                (from_agent,),
             ).fetchall()
             recipients = [dict(r) for r in rows]
         else:
@@ -272,6 +349,8 @@ def send_message(
             "id": message_id,
             "from": from_agent,
             "to": target_id,
+            "reply_to": reply_to,
+            "topic": topic or None,
             "content": content,
             "sent_at": now,
         }
@@ -293,9 +372,10 @@ def send_message(
 
         delivered_to.append(target_id)
 
-        # tmux nudge: verify pane is alive before sending
-        if nudge and tmux_target and _tmux_pane_alive(tmux_target) and _tmux_nudge(tmux_target):
+        # tmux nudge: verify pane alive, respect throttle, record on success
+        if nudge and tmux_target and _nudge_allowed(target_id) and _tmux_pane_alive(tmux_target) and _tmux_nudge(tmux_target):
             nudged_targets.append(target_id)
+            _record_nudge(target_id)
 
     return {
         "message_id": message_id,
@@ -306,11 +386,13 @@ def send_message(
 
 
 @mcp.tool()
-def get_messages(agent_id: str = "") -> list[dict]:
+def get_messages(agent_id: str = "", topic: str = "") -> list[dict]:
     """Return unread messages for the calling agent, archiving them on read.
 
     Args:
         agent_id: Agent whose inbox to read. Defaults to basename of cwd.
+        topic: If provided, return only messages matching this topic.
+               Non-matching messages remain in the inbox unread.
 
     Returns:
         List of message dicts sorted by arrival order (oldest first).
@@ -319,7 +401,7 @@ def get_messages(agent_id: str = "") -> list[dict]:
         agent_id = _self_agent_id()
 
     inbox = INBOX_DIR / agent_id
-    _dbg(f"get_messages: agent_id={agent_id!r} inbox={inbox} exists={inbox.exists()}")
+    _dbg(f"get_messages: agent_id={agent_id!r} topic={topic!r} inbox={inbox} exists={inbox.exists()}")
 
     if not inbox.exists():
         _dbg(f"get_messages: inbox missing → []")
@@ -335,8 +417,9 @@ def get_messages(agent_id: str = "") -> list[dict]:
     for path in msg_files:
         try:
             data = json.loads(path.read_text())
+            if topic and data.get("topic") != topic:
+                continue  # leave non-matching messages in inbox
             messages.append(data)
-            # Archive after reading
             path.rename(archive / path.name)
         except (json.JSONDecodeError, OSError):
             continue

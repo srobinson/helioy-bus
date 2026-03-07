@@ -5,7 +5,7 @@
 # Uses direct DB writes to avoid MCP subprocess overhead in lifecycle hooks.
 # Gracefully no-ops if Python or the bus dir is unavailable.
 #
-# Configured in ~/.claude/settings.json as a SessionStart hook.
+# Configured in /Users/alphab/Dev/LLM/DEV/helioy/helioy-plugins/plugins/helioy-bus/hooks/hooks.json as a SessionStart hook.
 
 set -euo pipefail
 
@@ -39,6 +39,9 @@ if [[ -n "$TMUX_TARGET" ]]; then
     AGENT_ID="${AGENT_ID}:${TMUX_TARGET}"
 fi
 
+# Session ID: set by claude-wrapper, empty if Claude was started directly
+SESSION_ID="${HELIOY_SESSION_ID:-}"
+
 # Write PID → agent_id mapping so hooks and server tools can self-identify
 PIDS_DIR="$BUS_DIR/pids"
 mkdir -p "$PIDS_DIR"
@@ -52,6 +55,7 @@ _HELIOY_INBOX_BASE="$INBOX_BASE" \
 _HELIOY_AGENT_ID="$AGENT_ID" \
 _HELIOY_PWD="$PWD_EFFECTIVE" \
 _HELIOY_TMUX="$TMUX_TARGET" \
+_HELIOY_SESSION_ID="$SESSION_ID" \
 python3 - <<PYEOF || true
 import sqlite3, os
 from datetime import datetime, timezone
@@ -73,10 +77,17 @@ conn.executescript("""
         cwd           TEXT NOT NULL,
         tmux_target   TEXT NOT NULL DEFAULT '',
         pid           INTEGER,
+        session_id    TEXT NOT NULL DEFAULT '',
         registered_at TEXT NOT NULL,
         last_seen     TEXT NOT NULL
     );
 """)
+
+# Add session_id column if upgrading from older schema
+try:
+    conn.execute("ALTER TABLE agents ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
+except Exception:
+    pass  # column already exists
 
 now = datetime.now(timezone.utc).isoformat()
 pid = os.getpid()
@@ -84,14 +95,16 @@ pid = os.getpid()
 conn.execute(
     """
     INSERT OR REPLACE INTO agents
-        (agent_id, cwd, tmux_target, pid, registered_at, last_seen)
-    VALUES (?, ?, ?, ?, ?, ?)
+        (agent_id, cwd, tmux_target, pid, session_id, registered_at, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     """,
     (
         os.environ["_HELIOY_AGENT_ID"],
         os.environ["_HELIOY_PWD"],
         os.environ["_HELIOY_TMUX"],
-        pid, now, now,
+        pid,
+        os.environ.get("_HELIOY_SESSION_ID", ""),
+        now, now,
     ),
 )
 conn.commit()
