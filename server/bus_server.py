@@ -68,6 +68,34 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _self_agent_id() -> str:
+    """Resolve agent_id for the calling process via the PID file written at SessionStart.
+
+    Tries HELIOY_BUS_CLAUDE_PID (set by proxy.py) first, then os.getppid(),
+    then falls back to basename(cwd).
+    """
+    pids_dir = BUS_DIR / "pids"
+    for pid in filter(None, [os.environ.get("HELIOY_BUS_CLAUDE_PID"), str(os.getppid())]):
+        pid_file = pids_dir / pid
+        if pid_file.exists():
+            resolved = pid_file.read_text().strip()
+            _dbg(f"_self_agent_id: pid={pid} pid_file={pid_file} → {resolved!r}")
+            return resolved
+    resolved = os.path.basename(os.getcwd()) or "unknown"
+    _dbg(f"_self_agent_id: no pid file found (tried HELIOY_BUS_CLAUDE_PID={os.environ.get('HELIOY_BUS_CLAUDE_PID')!r} ppid={os.getppid()}) → {resolved!r}")
+    return resolved
+
+
+LOG_FILE = Path("/tmp/helioy-bus-debug.log")
+
+
+def _dbg(msg: str) -> None:
+    from datetime import datetime as _dt
+    ts = _dt.now().isoformat(timespec="seconds")
+    with LOG_FILE.open("a") as f:
+        f.write(f"[{ts}] {msg}\n")
+
+
 # ── Registry tools ─────────────────────────────────────────────────────────────
 
 
@@ -85,13 +113,15 @@ def register_agent(
         tmux_target: tmux target for nudges, e.g. "main:1.0"
                      (session:window.pane). Auto-detected if omitted.
         agent_id: Override the auto-derived agent ID. Defaults to
-                  basename(pwd).
+                  "{basename(pwd)}:{tmux_target}" when tmux_target is provided,
+                  otherwise basename(pwd).
 
     Returns:
         {"agent_id": str, "registered_at": str}
     """
     if not agent_id:
-        agent_id = os.path.basename(pwd.rstrip("/")) or "unknown"
+        base = os.path.basename(pwd.rstrip("/")) or "unknown"
+        agent_id = f"{base}:{tmux_target}" if tmux_target else base
 
     # Parent PID is the Claude Code process (we are its stdio subprocess)
     parent_pid = os.getppid()
@@ -204,7 +234,7 @@ def send_message(
          "recipients": [agent_id, ...]}
     """
     if not from_agent:
-        from_agent = os.path.basename(os.getcwd()) or "unknown"
+        from_agent = _self_agent_id()
 
     with db() as conn:
         if to == "*":
@@ -251,6 +281,7 @@ def send_message(
         inbox.mkdir(parents=True, exist_ok=True)
 
         filename = f"{now.replace(':', '-')}_{message_id[:8]}.json"
+        _dbg(f"send_message: delivering to={target_id!r} inbox={inbox} file={filename}")
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(inbox), suffix=".tmp")
         try:
             with os.fdopen(tmp_fd, "w") as f:
@@ -285,16 +316,20 @@ def get_messages(agent_id: str = "") -> list[dict]:
         List of message dicts sorted by arrival order (oldest first).
     """
     if not agent_id:
-        agent_id = os.path.basename(os.getcwd()) or "unknown"
+        agent_id = _self_agent_id()
 
     inbox = INBOX_DIR / agent_id
+    _dbg(f"get_messages: agent_id={agent_id!r} inbox={inbox} exists={inbox.exists()}")
+
     if not inbox.exists():
+        _dbg(f"get_messages: inbox missing → []")
         return []
 
     archive = inbox / "archive"
     archive.mkdir(parents=True, exist_ok=True)
 
     msg_files = sorted(inbox.glob("*.json"))
+    _dbg(f"get_messages: found {len(msg_files)} file(s): {[p.name for p in msg_files]}")
     messages = []
 
     for path in msg_files:
@@ -306,6 +341,7 @@ def get_messages(agent_id: str = "") -> list[dict]:
         except (json.JSONDecodeError, OSError):
             continue
 
+    _dbg(f"get_messages: returning {len(messages)} message(s)")
     return messages
 
 
@@ -330,15 +366,17 @@ def _tmux_pane_alive(target: str) -> bool:
 
 
 def _tmux_nudge(tmux_target: str) -> bool:
-    """Send an empty Enter keystroke to wake an idle Claude session."""
+    """Send a 'you have mail!' keystroke to wake an idle Claude session."""
     try:
-        subprocess.run(
-            ["tmux", "send-keys", "-t", tmux_target, "", "Enter"],
+        result = subprocess.run(
+            ["tmux", "send-keys", "-t", tmux_target, "you have mail!", "Enter"],
             capture_output=True,
             timeout=3,
         )
-        return True
-    except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired):
+        _dbg(f"_tmux_nudge: target={tmux_target!r} rc={result.returncode} stderr={result.stderr.decode().strip()!r}")
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+        _dbg(f"_tmux_nudge: target={tmux_target!r} exception={e!r}")
         return False
 
 

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Inter-agent message bus for Claude Code instances"
 requires-python = ">=3.11"
 dependencies = [
+    "mcp-hmr",
     "mcp[cli]>=1.0.0",
 ]
 

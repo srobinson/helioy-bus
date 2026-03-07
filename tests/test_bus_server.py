@@ -6,10 +6,7 @@ Tests run against a temporary BUS_DIR so they never touch ~/.helioy/bus/.
 from __future__ import annotations
 
 import json
-import sqlite3
-import sys
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -43,6 +40,13 @@ def test_register_agent_basic():
     result = bm.register_agent(pwd="/tmp/myproject")
     assert result["agent_id"] == "myproject"
     assert "registered_at" in result
+
+
+def test_register_agent_with_tmux_target_uses_compound_id():
+    import server.bus_server as bm
+
+    result = bm.register_agent(pwd="/tmp/myproject", tmux_target="7:1.2")
+    assert result["agent_id"] == "myproject:7:1.2"
 
 
 def test_register_agent_explicit_id():
@@ -233,7 +237,7 @@ def test_send_message_nudge_skips_dead_pane():
     """No nudge attempt if pane doesn't exist."""
     import server.bus_server as bm
 
-    bm.register_agent(pwd="/tmp/beta", tmux_target="nosession:0.0")
+    bm.register_agent(pwd="/tmp/beta", tmux_target="nosession:0.0", agent_id="beta")
 
     with patch.object(bm, "_tmux_pane_alive", return_value=False) as mock_alive, \
          patch.object(bm, "_tmux_nudge") as mock_nudge:
@@ -247,7 +251,7 @@ def test_send_message_nudge_suppressed_with_flag():
     """nudge=False never calls _tmux_nudge."""
     import server.bus_server as bm
 
-    bm.register_agent(pwd="/tmp/beta", tmux_target="main:0.0")
+    bm.register_agent(pwd="/tmp/beta", tmux_target="main:0.0", agent_id="beta")
 
     with patch.object(bm, "_tmux_pane_alive", return_value=True), \
          patch.object(bm, "_tmux_nudge") as mock_nudge:
@@ -261,7 +265,7 @@ def test_send_message_nudges_live_pane():
     """nudge=True with a live pane calls _tmux_nudge and reports nudged=True."""
     import server.bus_server as bm
 
-    bm.register_agent(pwd="/tmp/beta", tmux_target="main:0.0")
+    bm.register_agent(pwd="/tmp/beta", tmux_target="main:0.0", agent_id="beta")
 
     with patch.object(bm, "_tmux_pane_alive", return_value=True), \
          patch.object(bm, "_tmux_nudge", return_value=True) as mock_nudge:

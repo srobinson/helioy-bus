@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETTINGS="$HOME/.claude/settings.json"
 SERVER_PATH="$SCRIPT_DIR/server/bus_server.py"
+MCP_HMR_BIN="$SCRIPT_DIR/.venv/bin/mcp-hmr"
 HOOKS_DIR="$SCRIPT_DIR/plugin/hooks"
 
 echo "helioy-bus installer"
@@ -28,6 +29,7 @@ import json
 
 settings_path = "$SETTINGS"
 server_path = "$SERVER_PATH"
+mcp_hmr_bin = "$MCP_HMR_BIN"
 hooks_dir = "$HOOKS_DIR"
 
 with open(settings_path) as f:
@@ -37,8 +39,8 @@ with open(settings_path) as f:
 settings.setdefault("mcpServers", {})
 settings["mcpServers"]["helioy-bus"] = {
     "type": "stdio",
-    "command": "python3",
-    "args": [server_path],
+    "command": mcp_hmr_bin,
+    "args": [server_path + ":mcp"],
 }
 
 # ── Hooks ─────────────────────────────────────────────────────────────────────

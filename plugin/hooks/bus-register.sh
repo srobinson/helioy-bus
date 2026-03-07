@@ -22,23 +22,27 @@ else
     PWD_EFFECTIVE="${PWD:-}"
 fi
 
-# Auto-detect tmux pane target
+# Auto-detect tmux pane target using $TMUX_PANE (e.g. %6) as explicit target.
+# Without -t, display-message uses the active pane — wrong when multiple Claudes run.
 TMUX_TARGET=""
 if [[ -n "${TMUX_PANE:-}" && -n "${TMUX:-}" ]]; then
-    # TMUX_PANE is set by tmux (e.g. %0, %1) — convert to session:window.pane
-    SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "")
-    WINDOW=$(tmux display-message -p '#{window_index}' 2>/dev/null || echo "0")
-    PANE=$(tmux display-message -p '#{pane_index}' 2>/dev/null || echo "0")
-    if [[ -n "$SESSION" ]]; then
-        TMUX_TARGET="${SESSION}:${WINDOW}.${PANE}"
-    fi
-elif [[ -n "${TMUX:-}" ]]; then
-    TARGET=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || echo "")
-    TMUX_TARGET="$TARGET"
+    TMUX_TARGET=$(tmux display-message -p -t "$TMUX_PANE" \
+        '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || echo "")
 fi
 
 # Override from environment if provided
 TMUX_TARGET="${HELIOY_BUS_TMUX:-$TMUX_TARGET}"
+
+# Compound agent_id: basename:tmux_target — prevents collision when multiple
+# Claude instances share the same working directory
+if [[ -n "$TMUX_TARGET" ]]; then
+    AGENT_ID="${AGENT_ID}:${TMUX_TARGET}"
+fi
+
+# Write PID → agent_id mapping so hooks and server tools can self-identify
+PIDS_DIR="$BUS_DIR/pids"
+mkdir -p "$PIDS_DIR"
+echo "$AGENT_ID" > "$PIDS_DIR/$PPID"
 
 # Write directly to SQLite (no MCP server needed).
 # Values are passed via environment variables to avoid shell injection when

@@ -11,9 +11,14 @@ set -euo pipefail
 
 BUS_DIR="${HELIOY_BUS_DIR:-$HOME/.helioy/bus}"
 DB_PATH="$BUS_DIR/registry.db"
+PIDS_DIR="$BUS_DIR/pids"
 
-# Agent ID: basename of CLAUDE_PROJECT_DIR
-if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+# Resolve agent_id from PID file written at SessionStart
+PID_FILE="$PIDS_DIR/$PPID"
+if [[ -f "$PID_FILE" ]]; then
+    AGENT_ID="$(cat "$PID_FILE")"
+    rm -f "$PID_FILE"
+elif [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
     AGENT_ID="$(basename "$CLAUDE_PROJECT_DIR")"
 else
     AGENT_ID="$(basename "${PWD:-unknown}")"
