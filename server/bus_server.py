@@ -216,6 +216,7 @@ def send_message(
     to: str,
     content: str,
     from_agent: str = "",
+    reply_to: str = "",
     nudge: bool = True,
 ) -> dict:
     """Send a message to another agent's mailbox.
@@ -227,6 +228,8 @@ def send_message(
         to: Recipient agent_id. Use "*" to broadcast to all registered agents.
         content: Message body (plain text or markdown).
         from_agent: Sender agent_id. Inferred from cwd basename if omitted.
+        reply_to: Address recipients should reply to. Defaults to from_agent.
+                  Set to "*" to make replies go to all agents (group thread).
         nudge: Send tmux send-keys nudge to wake idle recipient. Default True.
 
     Returns:
@@ -235,12 +238,15 @@ def send_message(
     """
     if not from_agent:
         from_agent = _self_agent_id()
+    if not reply_to:
+        reply_to = from_agent
 
     with db() as conn:
         if to == "*":
-            # Broadcast: all registered agents
+            # Broadcast: all registered agents except the sender
             rows = conn.execute(
-                "SELECT agent_id, tmux_target FROM agents"
+                "SELECT agent_id, tmux_target FROM agents WHERE agent_id != ?",
+                (from_agent,),
             ).fetchall()
             recipients = [dict(r) for r in rows]
         else:
@@ -272,6 +278,7 @@ def send_message(
             "id": message_id,
             "from": from_agent,
             "to": target_id,
+            "reply_to": reply_to,
             "content": content,
             "sent_at": now,
         }
