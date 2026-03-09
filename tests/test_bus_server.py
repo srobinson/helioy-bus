@@ -274,3 +274,89 @@ def test_send_message_nudges_live_pane():
     mock_nudge.assert_called_once_with("main:0.0")
     assert result["nudged"] is True
     assert "beta" in result["recipients"]
+
+
+# ── agent_type / role-based addressing ────────────────────────────────────────
+
+
+def test_register_agent_stores_agent_type():
+    """register_agent stores agent_type and list_agents returns it."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/api", agent_id="api", agent_type="backend-engineer")
+    agents = bm.list_agents()
+    agent = next(a for a in agents if a["agent_id"] == "api")
+    assert agent["agent_type"] == "backend-engineer"
+
+
+def test_register_agent_default_type_is_general():
+    """agent_type defaults to 'general' when not specified."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/myproject")
+    agents = bm.list_agents()
+    assert agents[0]["agent_type"] == "general"
+
+
+def test_send_message_role_addressing_delivers_to_matching_agents():
+    """send_message(to='role:backend-engineer') delivers to all agents with that type."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/api1", agent_id="api1", agent_type="backend-engineer")
+    bm.register_agent(pwd="/tmp/api2", agent_id="api2", agent_type="backend-engineer")
+    bm.register_agent(pwd="/tmp/ui", agent_id="ui", agent_type="frontend-engineer")
+
+    result = bm.send_message(
+        to="role:backend-engineer", content="hello backends", from_agent="orchestrator", nudge=False
+    )
+
+    assert result["delivered"] is True
+    assert set(result["recipients"]) == {"api1", "api2"}
+    assert "ui" not in result["recipients"]
+
+
+def test_send_message_role_addressing_excludes_sender():
+    """Role send excludes the sender even if it has the matching agent_type."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/be1", agent_id="be1", agent_type="backend-engineer")
+    bm.register_agent(pwd="/tmp/be2", agent_id="be2", agent_type="backend-engineer")
+
+    result = bm.send_message(
+        to="role:backend-engineer", content="hello", from_agent="be1", nudge=False
+    )
+
+    assert "be1" not in result["recipients"]
+    assert "be2" in result["recipients"]
+
+
+def test_send_message_role_not_found_returns_error():
+    """Role send with no matching agents returns error, not delivered."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/fe", agent_id="fe", agent_type="frontend-engineer")
+
+    result = bm.send_message(
+        to="role:backend-engineer", content="hello", from_agent="orchestrator", nudge=False
+    )
+
+    assert result["delivered"] is False
+    assert result["message_id"] is None
+    assert "error" in result
+
+
+def test_send_message_role_creates_inbox_files():
+    """Role send writes one inbox file per matching agent."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/be1", agent_id="be1", agent_type="backend-engineer")
+    bm.register_agent(pwd="/tmp/be2", agent_id="be2", agent_type="backend-engineer")
+
+    bm.send_message(
+        to="role:backend-engineer", content="task", from_agent="hub", nudge=False
+    )
+
+    for agent_id in ("be1", "be2"):
+        inbox = bm.INBOX_DIR / agent_id
+        files = list(inbox.glob("*.json"))
+        assert len(files) == 1, f"Expected 1 message in {agent_id} inbox, got {len(files)}"

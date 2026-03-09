@@ -42,6 +42,9 @@ fi
 # Session ID: set by claude-wrapper, empty if Claude was started directly
 SESSION_ID="${HELIOY_SESSION_ID:-}"
 
+# Agent type: defaults to "general", overridden by warroom/crew spawners
+AGENT_TYPE="${HELIOY_BUS_AGENT_TYPE:-general}"
+
 # Write PID → agent_id mapping so hooks and server tools can self-identify
 PIDS_DIR="$BUS_DIR/pids"
 mkdir -p "$PIDS_DIR"
@@ -56,6 +59,7 @@ _HELIOY_AGENT_ID="$AGENT_ID" \
 _HELIOY_PWD="$PWD_EFFECTIVE" \
 _HELIOY_TMUX="$TMUX_TARGET" \
 _HELIOY_SESSION_ID="$SESSION_ID" \
+_HELIOY_AGENT_TYPE="$AGENT_TYPE" \
 python3 - <<PYEOF || true
 import sqlite3, os
 from datetime import datetime, timezone
@@ -78,6 +82,7 @@ conn.executescript("""
         tmux_target   TEXT NOT NULL DEFAULT '',
         pid           INTEGER,
         session_id    TEXT NOT NULL DEFAULT '',
+        agent_type    TEXT NOT NULL DEFAULT 'general',
         registered_at TEXT NOT NULL,
         last_seen     TEXT NOT NULL
     );
@@ -89,14 +94,20 @@ try:
 except Exception:
     pass  # column already exists
 
+# Add agent_type column if upgrading from older schema
+try:
+    conn.execute("ALTER TABLE agents ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'general'")
+except Exception:
+    pass  # column already exists
+
 now = datetime.now(timezone.utc).isoformat()
 pid = os.getpid()
 
 conn.execute(
     """
     INSERT OR REPLACE INTO agents
-        (agent_id, cwd, tmux_target, pid, session_id, registered_at, last_seen)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+        (agent_id, cwd, tmux_target, pid, session_id, agent_type, registered_at, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """,
     (
         os.environ["_HELIOY_AGENT_ID"],
@@ -104,6 +115,7 @@ conn.execute(
         os.environ["_HELIOY_TMUX"],
         pid,
         os.environ.get("_HELIOY_SESSION_ID", ""),
+        os.environ.get("_HELIOY_AGENT_TYPE", "general"),
         now, now,
     ),
 )

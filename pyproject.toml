@@ -2,7 +2,7 @@
 name = "helioy-bus"
 version = "0.1.0"
 description = "Inter-agent message bus for Claude Code instances"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "mcp-hmr",
     "mcp[cli]>=1.0.0",
@@ -28,14 +28,14 @@ packages = ["server"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = false
 ignore_missing_imports = true
 

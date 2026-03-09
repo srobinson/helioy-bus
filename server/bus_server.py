@@ -8,6 +8,7 @@ All agents sharing the same filesystem share the same bus.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -43,6 +44,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
             tmux_target   TEXT NOT NULL DEFAULT '',
             pid           INTEGER,
             session_id    TEXT NOT NULL DEFAULT '',
+            agent_type    TEXT NOT NULL DEFAULT 'general',
             profile       TEXT,
             registered_at TEXT NOT NULL,
             last_seen     TEXT NOT NULL
@@ -54,10 +56,11 @@ def _init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_nudge_log_agent ON nudge_log(agent_id, nudged_at);
     """)
     # Migration: add session_id column for existing databases
-    try:
+    with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE agents ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass  # column already exists
+    # Migration: add agent_type column for existing databases
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE agents ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'general'")
 
 
 @contextmanager
@@ -117,6 +120,7 @@ def register_agent(
     tmux_target: str = "",
     agent_id: str = "",
     session_id: str = "",
+    agent_type: str = "general",
     profile: dict | None = None,
 ) -> dict:
     """Register this Claude Code instance as an agent on the helioy-bus.
@@ -131,6 +135,9 @@ def register_agent(
                   otherwise basename(pwd).
         session_id: Claude Code session UUID. Set by claude-wrapper via
                     HELIOY_SESSION_ID env var. Enables JSONL stream access.
+        agent_type: Specialist role of this agent (e.g. "general",
+                    "backend-engineer", "mobile-engineer"). Defaults to
+                    "general". Used for role-based addressing in send_message.
         profile: Optional agent profile dict with structural identity fields:
                  owns (list of repo/crate names), consumes (list of dependencies),
                  capabilities (list of available MCP server names),
@@ -157,10 +164,10 @@ def register_agent(
         conn.execute(
             """
             INSERT OR REPLACE INTO agents
-                (agent_id, cwd, tmux_target, pid, session_id, profile, registered_at, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (agent_id, cwd, tmux_target, pid, session_id, agent_type, profile, registered_at, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (agent_id, pwd, tmux_target, parent_pid, session_id, profile_json, now, now),
+            (agent_id, pwd, tmux_target, parent_pid, session_id, agent_type, profile_json, now, now),
         )
 
     # Ensure inbox directory exists
@@ -202,10 +209,8 @@ def list_agents() -> list[dict]:
         if a["agent_id"] in dead_ids:
             continue
         if a.get("profile"):
-            try:
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
                 a["profile"] = json.loads(a["profile"])
-            except (json.JSONDecodeError, TypeError):
-                pass
         result.append(a)
     return result
 
@@ -251,7 +256,6 @@ NUDGE_THROTTLE_SECONDS = 30  # 30 seconds
 
 def _nudge_allowed(agent_id: str) -> bool:
     """Return True if the agent has not been nudged within the throttle window."""
-    cutoff = datetime.now(UTC).isoformat()
     with db() as conn:
         row = conn.execute(
             "SELECT nudged_at FROM nudge_log WHERE agent_id = ? ORDER BY nudged_at DESC LIMIT 1",
@@ -320,6 +324,22 @@ def send_message(
                 (from_agent,),
             ).fetchall()
             recipients = [dict(r) for r in rows]
+        elif to.startswith("role:"):
+            # Role-based: all agents with matching agent_type, excluding sender
+            role = to[len("role:"):]
+            rows = conn.execute(
+                "SELECT agent_id, tmux_target FROM agents WHERE agent_type = ? AND agent_id != ?",
+                (role, from_agent),
+            ).fetchall()
+            recipients = [dict(r) for r in rows]
+            if not recipients:
+                return {
+                    "message_id": None,
+                    "delivered": False,
+                    "nudged": False,
+                    "recipients": [],
+                    "error": f"No agents with role '{role}' found in registry",
+                }
         else:
             row = conn.execute(
                 "SELECT agent_id, tmux_target FROM agents WHERE agent_id = ?",
@@ -404,7 +424,7 @@ def get_messages(agent_id: str = "", topic: str = "") -> list[dict]:
     _dbg(f"get_messages: agent_id={agent_id!r} topic={topic!r} inbox={inbox} exists={inbox.exists()}")
 
     if not inbox.exists():
-        _dbg(f"get_messages: inbox missing → []")
+        _dbg("get_messages: inbox missing → []")
         return []
 
     archive = inbox / "archive"
