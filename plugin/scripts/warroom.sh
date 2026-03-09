@@ -151,13 +151,13 @@ else
     first_pane=$(tmux new-window -n "$WINDOW" -c "$cwd" -P -F '#{pane_id}')
     setup_pane "$first_pane" "$repo" "${agent_types[0]}"
     lock_window_titles "$WINDOW"
-    tmux send-keys -t "$first_pane" "$CLAUDE --agent ${agent_types[0]}" Enter
+    tmux send-keys -t "$first_pane" "$CLAUDE --agent helioy-tools:${agent_types[0]}" Enter
 
     # Split for remaining agent types
     for i in $(seq 1 $(( ${#agent_types[@]} - 1 ))); do
         pane_id=$(tmux split-window -t "$WINDOW" -c "$cwd" -P -F '#{pane_id}')
         setup_pane "$pane_id" "$repo" "${agent_types[$i]}"
-        tmux send-keys -t "$pane_id" "$CLAUDE --agent ${agent_types[$i]}" Enter
+        tmux send-keys -t "$pane_id" "$CLAUDE --agent helioy-tools:${agent_types[$i]}" Enter
         tmux select-layout -t "$WINDOW" tiled
     done
 

@@ -106,13 +106,17 @@ assert_eq "agent_id is basename(PWD)"             "$(parse_result "$result" id)"
 echo ""
 echo "--- Identity pattern validation ---"
 
-PATTERN='^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+:[0-9]+:[0-9]+\.[0-9]+$'
+# Must stay in sync with _IDENTITY_PATTERN in resolve-identity.sh
+PATTERN='^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+:[0-9]+\.[0-9]+$'
 
 for title in \
     "fmm:general:7:2.1" \
     "helioy-bus:backend-engineer:7:3.1" \
     "my_repo:frontend-engineer:10:0.0" \
-    "repo:general:1:1.1"
+    "repo:general:1:1.1" \
+    "fmm:general:helioy:2.1" \
+    "helioy-bus:general:work:1.0" \
+    "myrepo:backend-engineer:my-session:3.2"
 do
     if printf '%s' "$title" | grep -qE "$PATTERN"; then
         ok "valid title matches: $title"
@@ -125,7 +129,6 @@ for title in \
     "fmm" \
     "fmm:general" \
     "fmm:general:7" \
-    "fmm:general:abc:2.1" \
     "fmm:general:7:abc" \
     "repo with spaces:general:7:2.1" \
     ""

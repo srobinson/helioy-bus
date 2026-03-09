@@ -8,13 +8,16 @@
 #
 # Identity format: {repo}:{agent_type}:{session}:{window}.{pane}
 # Examples:
-#   Pane-title (warroom/crew):  fmm:general:7:2.1
+#   Pane-title (warroom/crew):  fmm:general:7:2.1          (unnamed session)
+#   Pane-title (named session): fmm:general:helioy:2.1     (named session)
 #   Pane-title (role-mode):     helioy-bus:backend-engineer:7:3.1
 #   Fallback (ad-hoc, no tmux): myproject
 #   Fallback (ad-hoc, tmux):    myproject:general:7:2.1
 
 # Validation regex: repo:type:session:window.pane
-_IDENTITY_PATTERN='^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+:[0-9]+:[0-9]+\.[0-9]+$'
+# session_name may be a number (unnamed sessions) or an alphanumeric string
+# (named sessions like "work" or "helioy"). window.pane are always numeric.
+_IDENTITY_PATTERN='^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+:[0-9]+\.[0-9]+$'
 
 resolve_agent_id() {
     local title=""

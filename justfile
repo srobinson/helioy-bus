@@ -1,11 +1,11 @@
-set dotenv-load
+set dotenv-load := true
 
 server_dir := "server"
 
 # Lint and type-check
 check:
-    uv run ruff check {{server_dir}}/
-    uv run mypy {{server_dir}}/bus_server.py --ignore-missing-imports
+    uv run ruff check {{ server_dir }}/
+    uv run mypy {{ server_dir }}/bus_server.py --ignore-missing-imports
 
 # Install dependencies
 build:
@@ -17,11 +17,7 @@ test:
 
 # Run the MCP server directly (for manual testing)
 run:
-    uv run python {{server_dir}}/bus_server.py
-
-# Install helioy-bus as a user-scoped MCP server in ~/.claude/settings.json
-install:
-    ./install.sh
+    uv run python {{ server_dir }}/bus_server.py
 
 # Show registered agents (quick CLI check)
 agents:

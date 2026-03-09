@@ -530,3 +530,52 @@ def test_adhoc_session_fallback_identity():
 
     bm.unregister_agent("myproject")
     assert bm.list_agents() == []
+
+
+def test_profile_migration_from_shell_hook_created_db(tmp_path, monkeypatch):
+    """register_agent succeeds even when the DB was first created by bus-register.sh
+    (which doesn't include the profile column).
+
+    Reproduces the missing-migration bug: if the shell hook runs first and
+    creates the agents table without the profile column, the MCP server must
+    add it via ALTER TABLE before attempting the INSERT OR REPLACE.
+    """
+    import sqlite3
+    import server.bus_server as bm
+
+    bus_dir = tmp_path / "bus_legacy"
+    bus_dir.mkdir()
+    monkeypatch.setattr(bm, "BUS_DIR", bus_dir)
+    monkeypatch.setattr(bm, "REGISTRY_DB", bus_dir / "registry.db")
+    monkeypatch.setattr(bm, "INBOX_DIR", bus_dir / "inbox")
+
+    # Simulate the DB as bus-register.sh creates it: no profile column.
+    conn = sqlite3.connect(str(bus_dir / "registry.db"))
+    conn.executescript("""
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS agents (
+            agent_id      TEXT PRIMARY KEY,
+            cwd           TEXT NOT NULL,
+            tmux_target   TEXT NOT NULL DEFAULT '',
+            pid           INTEGER,
+            session_id    TEXT NOT NULL DEFAULT '',
+            agent_type    TEXT NOT NULL DEFAULT 'general',
+            registered_at TEXT NOT NULL,
+            last_seen     TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    # MCP register_agent must succeed — migration adds profile column.
+    result = bm.register_agent(
+        pwd="/tmp/myproject",
+        agent_id="myproject",
+        agent_type="general",
+        profile={"owns": ["myproject"]},
+    )
+    assert result["agent_id"] == "myproject"
+
+    agents = bm.list_agents()
+    assert len(agents) == 1
+    assert agents[0].get("profile") == {"owns": ["myproject"]}

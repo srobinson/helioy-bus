@@ -40,6 +40,7 @@ warroom.sh kill all      # kills both
 Pane title format: `{repo}:{agent_type}:{session}:{window}.{pane}`
 
 Examples:
+
 - `fmm:general:7:2.1` (repo-mode)
 - `helioy-bus:backend-engineer:7:3.1` (role-mode)
 

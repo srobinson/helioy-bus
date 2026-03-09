@@ -61,6 +61,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
     # Migration: add agent_type column for existing databases
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE agents ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'general'")
+    # Migration: add profile column for existing databases (nullable, no default)
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE agents ADD COLUMN profile TEXT")
 
 
 @contextmanager
