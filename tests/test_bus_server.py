@@ -360,3 +360,173 @@ def test_send_message_role_creates_inbox_files():
         inbox = bm.INBOX_DIR / agent_id
         files = list(inbox.glob("*.json"))
         assert len(files) == 1, f"Expected 1 message in {agent_id} inbox, got {len(files)}"
+
+
+# ── End-to-end lifecycle scenarios ────────────────────────────────────────────
+
+
+def test_repo_mode_lifecycle():
+    """Simulates the repo-mode lifecycle: register multiple general agents,
+    send between them, receive, then unregister."""
+    import server.bus_server as bm
+
+    # Register two "warroom" agents with pane-title-style IDs
+    bm.register_agent(
+        pwd="/tmp/fmm", agent_id="fmm:general:7:2.1", agent_type="general", tmux_target="7:2.1"
+    )
+    bm.register_agent(
+        pwd="/tmp/helioy-bus",
+        agent_id="helioy-bus:general:7:2.2",
+        agent_type="general",
+        tmux_target="7:2.2",
+    )
+
+    with patch.object(bm, "_tmux_pane_alive", return_value=True):
+        agents = bm.list_agents()
+    assert len(agents) == 2
+    assert all(a["agent_type"] == "general" for a in agents)
+
+    # Direct message between two repo-mode agents
+    result = bm.send_message(
+        to="helioy-bus:general:7:2.2",
+        content="hi from fmm",
+        from_agent="fmm:general:7:2.1",
+        nudge=False,
+    )
+    assert result["delivered"] is True
+    assert "helioy-bus:general:7:2.2" in result["recipients"]
+
+    messages = bm.get_messages("helioy-bus:general:7:2.2")
+    assert len(messages) == 1
+    assert messages[0]["content"] == "hi from fmm"
+
+    # Unregister
+    bm.unregister_agent("fmm:general:7:2.1")
+    bm.unregister_agent("helioy-bus:general:7:2.2")
+    with patch.object(bm, "_tmux_pane_alive", return_value=True):
+        assert bm.list_agents() == []
+
+
+def test_role_mode_lifecycle():
+    """Simulates the crew/role-mode lifecycle: register specialist agents,
+    send via role addressing, receive, verify isolation."""
+    import server.bus_server as bm
+
+    # Register agents as warroom.sh would: pane-title-style IDs with agent_type
+    bm.register_agent(
+        pwd="/tmp/helioy-bus",
+        agent_id="helioy-bus:backend-engineer:7:3.1",
+        agent_type="backend-engineer",
+        tmux_target="7:3.1",
+    )
+    bm.register_agent(
+        pwd="/tmp/helioy-bus",
+        agent_id="helioy-bus:frontend-engineer:7:3.2",
+        agent_type="frontend-engineer",
+        tmux_target="7:3.2",
+    )
+    bm.register_agent(
+        pwd="/tmp/helioy-bus",
+        agent_id="helioy-bus:general:7:3.3",
+        agent_type="general",
+        tmux_target="7:3.3",
+    )
+
+    # Role-based send: only backend-engineer should receive
+    result = bm.send_message(
+        to="role:backend-engineer",
+        content="implement the auth endpoint",
+        from_agent="orchestrator",
+        nudge=False,
+    )
+    assert result["delivered"] is True
+    assert result["recipients"] == ["helioy-bus:backend-engineer:7:3.1"]
+
+    # frontend-engineer and general should not have received anything
+    msgs_fe = bm.get_messages("helioy-bus:frontend-engineer:7:3.2")
+    msgs_gen = bm.get_messages("helioy-bus:general:7:3.3")
+    assert msgs_fe == []
+    assert msgs_gen == []
+
+    # Backend agent reads its message
+    msgs_be = bm.get_messages("helioy-bus:backend-engineer:7:3.1")
+    assert len(msgs_be) == 1
+    assert msgs_be[0]["content"] == "implement the auth endpoint"
+
+
+def test_coexistence_of_both_modes():
+    """Both warroom (general) and crew (specialist) agents coexist and can
+    message each other directly or via broadcast."""
+    import server.bus_server as bm
+
+    # Warroom agents (repo-mode, general)
+    bm.register_agent(
+        pwd="/tmp/fmm", agent_id="fmm:general:7:2.1", agent_type="general", tmux_target="7:2.1"
+    )
+    bm.register_agent(
+        pwd="/tmp/helioy-bus",
+        agent_id="helioy-bus:general:7:2.2",
+        agent_type="general",
+        tmux_target="7:2.2",
+    )
+
+    # Crew agents (role-mode, specialist)
+    bm.register_agent(
+        pwd="/tmp/helioy-bus",
+        agent_id="helioy-bus:backend-engineer:7:3.1",
+        agent_type="backend-engineer",
+        tmux_target="7:3.1",
+    )
+    bm.register_agent(
+        pwd="/tmp/helioy-bus",
+        agent_id="helioy-bus:frontend-engineer:7:3.2",
+        agent_type="frontend-engineer",
+        tmux_target="7:3.2",
+    )
+
+    with patch.object(bm, "_tmux_pane_alive", return_value=True):
+        agents = bm.list_agents()
+    assert len(agents) == 4
+
+    # Broadcast from orchestrator reaches all four agents
+    result = bm.send_message(
+        to="*", content="standup time", from_agent="orchestrator", nudge=False
+    )
+    assert set(result["recipients"]) == {
+        "fmm:general:7:2.1",
+        "helioy-bus:general:7:2.2",
+        "helioy-bus:backend-engineer:7:3.1",
+        "helioy-bus:frontend-engineer:7:3.2",
+    }
+
+    # Role-based send reaches only specialists
+    result2 = bm.send_message(
+        to="role:backend-engineer",
+        content="deploy the API",
+        from_agent="fmm:general:7:2.1",
+        nudge=False,
+    )
+    assert result2["recipients"] == ["helioy-bus:backend-engineer:7:3.1"]
+
+
+def test_adhoc_session_fallback_identity():
+    """An ad-hoc claude session (no warroom) registers with basename identity."""
+    import server.bus_server as bm
+
+    # Simulate ad-hoc registration as bus-register.sh would derive it
+    bm.register_agent(pwd="/tmp/myproject", agent_id="myproject", agent_type="general")
+
+    agents = bm.list_agents()
+    assert len(agents) == 1
+    agent = agents[0]
+    assert agent["agent_id"] == "myproject"
+    assert agent["agent_type"] == "general"
+
+    # Can receive direct messages
+    result = bm.send_message(
+        to="myproject", content="hello from peer", from_agent="other", nudge=False
+    )
+    assert result["delivered"] is True
+
+    bm.unregister_agent("myproject")
+    assert bm.list_agents() == []
