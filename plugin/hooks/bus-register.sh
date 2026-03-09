@@ -13,37 +13,32 @@ BUS_DIR="${HELIOY_BUS_DIR:-$HOME/.helioy/bus}"
 DB_PATH="$BUS_DIR/registry.db"
 INBOX_BASE="$BUS_DIR/inbox"
 
-# Agent ID: basename of CLAUDE_PROJECT_DIR
-if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-    AGENT_ID="$(basename "$CLAUDE_PROJECT_DIR")"
-    PWD_EFFECTIVE="$CLAUDE_PROJECT_DIR"
-else
-    AGENT_ID="$(basename "${PWD:-unknown}")"
-    PWD_EFFECTIVE="${PWD:-}"
-fi
+# Resolve identity via shared lib (pane-title-first, then basename fallback).
+# Exports: HELIOY_AGENT_ID, HELIOY_AGENT_TYPE, HELIOY_AGENT_REPO
+HOOKS_LIB="$(dirname "$0")/lib/resolve-identity.sh"
+# shellcheck source=lib/resolve-identity.sh
+source "$HOOKS_LIB"
+resolve_agent_id
 
-# Auto-detect tmux pane target using $TMUX_PANE (e.g. %6) as explicit target.
-# Without -t, display-message uses the active pane — wrong when multiple Claudes run.
+AGENT_ID="$HELIOY_AGENT_ID"
+AGENT_TYPE="$HELIOY_AGENT_TYPE"
+
+# Derive TMUX_TARGET for the registry record (used for nudges).
 TMUX_TARGET=""
 if [[ -n "${TMUX_PANE:-}" && -n "${TMUX:-}" ]]; then
-    TMUX_TARGET=$(tmux display-message -p -t "$TMUX_PANE" \
-        '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || echo "")
+    TMUX_TARGET="${HELIOY_BUS_TMUX:-$(tmux display-message -p -t "$TMUX_PANE" \
+        '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || echo "")}"
 fi
 
-# Override from environment if provided
-TMUX_TARGET="${HELIOY_BUS_TMUX:-$TMUX_TARGET}"
-
-# Compound agent_id: basename:tmux_target — prevents collision when multiple
-# Claude instances share the same working directory
-if [[ -n "$TMUX_TARGET" ]]; then
-    AGENT_ID="${AGENT_ID}:${TMUX_TARGET}"
+# Working directory for this session
+if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+    PWD_EFFECTIVE="$CLAUDE_PROJECT_DIR"
+else
+    PWD_EFFECTIVE="${PWD:-}"
 fi
 
 # Session ID: set by claude-wrapper, empty if Claude was started directly
 SESSION_ID="${HELIOY_SESSION_ID:-}"
-
-# Agent type: defaults to "general", overridden by warroom/crew spawners
-AGENT_TYPE="${HELIOY_BUS_AGENT_TYPE:-general}"
 
 # Write PID → agent_id mapping so hooks and server tools can self-identify
 PIDS_DIR="$BUS_DIR/pids"

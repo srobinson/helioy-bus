@@ -13,15 +13,18 @@ BUS_DIR="${HELIOY_BUS_DIR:-$HOME/.helioy/bus}"
 DB_PATH="$BUS_DIR/registry.db"
 PIDS_DIR="$BUS_DIR/pids"
 
-# Resolve agent_id from PID file written at SessionStart
+# Prefer PID file written at SessionStart (guaranteed to match the registered ID).
+# Fall back to shared identity resolution when no PID file is present.
 PID_FILE="$PIDS_DIR/$PPID"
 if [[ -f "$PID_FILE" ]]; then
     AGENT_ID="$(cat "$PID_FILE")"
     rm -f "$PID_FILE"
-elif [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-    AGENT_ID="$(basename "$CLAUDE_PROJECT_DIR")"
 else
-    AGENT_ID="$(basename "${PWD:-unknown}")"
+    HOOKS_LIB="$(dirname "$0")/lib/resolve-identity.sh"
+    # shellcheck source=lib/resolve-identity.sh
+    source "$HOOKS_LIB"
+    resolve_agent_id
+    AGENT_ID="$HELIOY_AGENT_ID"
 fi
 
 # Only act if the DB exists

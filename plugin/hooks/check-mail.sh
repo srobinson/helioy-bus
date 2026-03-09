@@ -17,14 +17,17 @@ set -euo pipefail
 INBOX_BASE="${HELIOY_BUS_INBOX:-$HOME/.helioy/bus/inbox}"
 PIDS_DIR="${HELIOY_BUS_DIR:-$HOME/.helioy/bus}/pids"
 
-# Resolve agent_id from PID file written at SessionStart
+# Prefer PID file written at SessionStart (fast path — avoids tmux call on every tool use).
+# Fall back to shared identity resolution when no PID file is present.
 PID_FILE="$PIDS_DIR/$PPID"
 if [[ -f "$PID_FILE" ]]; then
     AGENT_ID="$(cat "$PID_FILE")"
-elif [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-    AGENT_ID="$(basename "$CLAUDE_PROJECT_DIR")"
 else
-    AGENT_ID="$(basename "${PWD:-unknown}")"
+    HOOKS_LIB="$(dirname "$0")/lib/resolve-identity.sh"
+    # shellcheck source=lib/resolve-identity.sh
+    source "$HOOKS_LIB"
+    resolve_agent_id
+    AGENT_ID="$HELIOY_AGENT_ID"
 fi
 
 MAILBOX="$INBOX_BASE/$AGENT_ID"
