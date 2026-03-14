@@ -36,6 +36,12 @@ resolve_agent_id() {
         fi
     fi
 
+    # Strip Claude Code's TUI decorations from the pane title.
+    # Claude prefixes titles with status icons like "✳ ", "⠐ ", "⠒ ", etc.
+    if [[ -n "$title" ]]; then
+        title=$(printf '%s' "$title" | sed 's/^[^a-zA-Z0-9_-]* *//')
+    fi
+
     # Step 2: If the pane title matches the canonical identity pattern, use it
     # as the source of truth for agent_id and agent_type.
     if [[ -n "$title" ]] && printf '%s' "$title" | grep -qE "$_IDENTITY_PATTERN"; then
@@ -48,6 +54,37 @@ resolve_agent_id() {
         local _without_swp="${_without_wp%:*}" # drop :session
         # agent_type = everything between repo: and :session
         HELIOY_AGENT_TYPE="${_without_swp#*:}"
+        export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO
+        return 0
+    fi
+
+    # Step 2.5: The pane title may contain a bare agent type set by
+    # `claude --agent <type>` (e.g. "voltagent-lang:rust-engineer" or
+    # "backend-engineer"). Recognize it and construct the full identity.
+    # A bare agent type contains only alphanumerics, hyphens, underscores,
+    # and colons, but does NOT end with a window.pane suffix.
+    _BARE_AGENT_TYPE_PATTERN='^[a-zA-Z][a-zA-Z0-9_:-]*[a-zA-Z0-9]$'
+    if [[ -n "$title" ]] \
+        && [[ "$title" != "Claude Code" ]] \
+        && printf '%s' "$title" | grep -qE "$_BARE_AGENT_TYPE_PATTERN" \
+        && ! printf '%s' "$title" | grep -qE '[0-9]+\.[0-9]+$'; then
+
+        local repo
+        if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+            repo="$(basename "$CLAUDE_PROJECT_DIR")"
+        else
+            repo="$(basename "${PWD:-unknown}")"
+        fi
+
+        HELIOY_AGENT_REPO="$repo"
+        HELIOY_AGENT_TYPE="$title"
+
+        if [[ -n "$tmux_target" ]]; then
+            HELIOY_AGENT_ID="${repo}:${title}:${tmux_target}"
+        else
+            HELIOY_AGENT_ID="${repo}:${title}"
+        fi
+
         export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO
         return 0
     fi

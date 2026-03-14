@@ -181,6 +181,54 @@ parsed=$(parse_title "myrepo:voltagent-lang:python-pro:helioy:1.0")
 assert_eq "repo extracted (named session)" "${parsed%%|*}" "myrepo"
 assert_eq "type extracted (named session)" "${parsed#*|}"  "voltagent-lang:python-pro"
 
+# ── Test 6: Claude Code TUI decoration stripping ─────────────────────────────
+echo ""
+echo "--- TUI decoration stripping ---"
+
+# Claude Code prefixes pane titles with status icons like "✳ ", "⠐ ", etc.
+strip_decorations() {
+    printf '%s' "$1" | sed 's/^[^a-zA-Z0-9_-]* *//'
+}
+
+assert_eq "strip ✳ prefix"  "$(strip_decorations '✳ voltagent-lang:rust-engineer')" "voltagent-lang:rust-engineer"
+assert_eq "strip ⠐ prefix"  "$(strip_decorations '⠐ Claude Code')"                  "Claude Code"
+assert_eq "strip ⠒ prefix"  "$(strip_decorations '⠒ backend-engineer')"              "backend-engineer"
+assert_eq "no-op clean title" "$(strip_decorations 'fmm:general:7:2.1')"             "fmm:general:7:2.1"
+assert_eq "strip emoji prefix" "$(strip_decorations '🔵 rust-engineer')"              "rust-engineer"
+
+# ── Test 7: Bare agent type recognition (Step 2.5) ───────────────────────────
+echo ""
+echo "--- Bare agent type recognition ---"
+
+BARE_PATTERN='^[a-zA-Z][a-zA-Z0-9_:-]*[a-zA-Z0-9]$'
+
+for bare in \
+    "backend-engineer" \
+    "voltagent-lang:rust-engineer" \
+    "voltagent-qa-sec:architect-reviewer" \
+    "general"
+do
+    if printf '%s' "$bare" | grep -qE "$BARE_PATTERN"; then
+        ok "bare type recognized: $bare"
+    else
+        fail "bare type should match" "$bare" "matches bare pattern"
+    fi
+done
+
+# These should NOT match as bare agent types
+for nonbare in \
+    "Claude Code" \
+    "fmm:general:7:2.1" \
+    "" \
+    "1invalid"
+do
+    if ! printf '%s' "$nonbare" | grep -qE "$BARE_PATTERN" 2>/dev/null; then
+        ok "non-bare rejected: '$nonbare'"
+    else
+        fail "non-bare should NOT match" "$nonbare" "does not match bare pattern"
+    fi
+done
+
 # ── Summary -------------------------------------------------------------------
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
