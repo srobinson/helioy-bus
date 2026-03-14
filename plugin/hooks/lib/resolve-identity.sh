@@ -14,10 +14,11 @@
 #   Fallback (ad-hoc, no tmux): myproject
 #   Fallback (ad-hoc, tmux):    myproject:general:7:2.1
 
-# Validation regex: repo:type:session:window.pane
+# Validation regex: repo:type[:subtype]:session:window.pane
 # session_name may be a number (unnamed sessions) or an alphanumeric string
 # (named sessions like "work" or "helioy"). window.pane are always numeric.
-_IDENTITY_PATTERN='^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+:[0-9]+\.[0-9]+$'
+# agent_type may contain colons for namespaced types (e.g. voltagent-lang:rust-engineer).
+_IDENTITY_PATTERN='^[a-zA-Z0-9_-]+:[a-zA-Z0-9_:-]+:[a-zA-Z0-9_-]+:[0-9]+\.[0-9]+$'
 
 resolve_agent_id() {
     local title=""
@@ -39,9 +40,14 @@ resolve_agent_id() {
     # as the source of truth for agent_id and agent_type.
     if [[ -n "$title" ]] && printf '%s' "$title" | grep -qE "$_IDENTITY_PATTERN"; then
         HELIOY_AGENT_ID="$title"
+        # Parse from both ends: repo is first segment, session:window.pane
+        # is the last two segments, agent_type is everything in between.
         HELIOY_AGENT_REPO="${title%%:*}"
-        local _rest="${title#*:}"
-        HELIOY_AGENT_TYPE="${_rest%%:*}"
+        # Strip trailing :session:window.pane (last two colon-segments)
+        local _without_wp="${title%:*}"       # drop :window.pane
+        local _without_swp="${_without_wp%:*}" # drop :session
+        # agent_type = everything between repo: and :session
+        HELIOY_AGENT_TYPE="${_without_swp#*:}"
         export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO
         return 0
     fi

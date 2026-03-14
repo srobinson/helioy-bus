@@ -257,8 +257,20 @@ def heartbeat(agent_id: str) -> dict:
 NUDGE_THROTTLE_SECONDS = 30  # 30 seconds
 
 
+def _inbox_has_unread(agent_id: str) -> bool:
+    """Return True if the agent's inbox contains unread messages."""
+    inbox = INBOX_DIR / agent_id
+    if not inbox.exists():
+        return False
+    return bool(list(inbox.glob("*.json")))
+
+
 def _nudge_allowed(agent_id: str) -> bool:
-    """Return True if the agent has not been nudged within the throttle window."""
+    """Return True if a nudge should be sent to the agent.
+
+    Allows re-nudging within the throttle window if the inbox still has
+    unread messages, meaning the previous nudge did not wake the agent.
+    """
     with db() as conn:
         row = conn.execute(
             "SELECT nudged_at FROM nudge_log WHERE agent_id = ? ORDER BY nudged_at DESC LIMIT 1",
@@ -269,7 +281,14 @@ def _nudge_allowed(agent_id: str) -> bool:
         last = row["nudged_at"]
         from datetime import timedelta
         cutoff_dt = datetime.now(UTC) - timedelta(seconds=NUDGE_THROTTLE_SECONDS)
-        return last < cutoff_dt.isoformat()
+        if last < cutoff_dt.isoformat():
+            return True  # throttle window expired
+        # Within throttle window, but previous nudge may not have worked.
+        # If unread messages remain, the agent never woke up. Re-nudge.
+        if _inbox_has_unread(agent_id):
+            _dbg(f"_nudge_allowed: {agent_id!r} throttled but inbox has unread messages, allowing re-nudge")
+            return True
+        return False
 
 
 def _record_nudge(agent_id: str) -> None:
@@ -308,7 +327,7 @@ def send_message(
         topic: Optional thread identifier (e.g. "am-retention-2026-03-07").
                Human-readable. Used to filter messages by topic in get_messages.
         nudge: Send tmux send-keys nudge to wake idle recipient. Default True.
-               Throttled to once per 5 minutes per recipient.
+               Throttled to once per 30s per recipient unless inbox has unread messages.
 
     Returns:
         {"message_id": str, "delivered": bool, "nudged": bool,
@@ -472,10 +491,38 @@ def _tmux_pane_alive(target: str) -> bool:
 
 
 def _tmux_nudge(tmux_target: str) -> bool:
-    """Send a 'you have mail!' keystroke to wake an idle Claude session."""
+    """Send a 'you have mail!' keystroke to wake an idle Claude session.
+
+    Exits copy-mode first if the pane is in it (common when user scrolls),
+    then sends literal text followed by Enter as a separate key.
+    """
     try:
+        # Exit copy-mode if active. -X cancel writes nothing to the app's PTY.
+        mode_result = subprocess.run(
+            ["tmux", "display-message", "-t", tmux_target, "-p", "#{pane_in_mode}"],
+            capture_output=True,
+            timeout=3,
+        )
+        if mode_result.returncode == 0 and mode_result.stdout.decode().strip() == "1":
+            subprocess.run(
+                ["tmux", "send-keys", "-t", tmux_target, "-X", "cancel"],
+                capture_output=True,
+                timeout=3,
+            )
+            _dbg(f"_tmux_nudge: exited copy-mode on {tmux_target!r}")
+
+        # Send literal text, then Enter as a named key (separate call).
         result = subprocess.run(
-            ["tmux", "send-keys", "-t", tmux_target, "you have mail!", "Enter"],
+            ["tmux", "send-keys", "-t", tmux_target, "-l", "you have mail!"],
+            capture_output=True,
+            timeout=3,
+        )
+        if result.returncode != 0:
+            _dbg(f"_tmux_nudge: target={tmux_target!r} text rc={result.returncode} stderr={result.stderr.decode().strip()!r}")
+            return False
+
+        result = subprocess.run(
+            ["tmux", "send-keys", "-t", tmux_target, "Enter"],
             capture_output=True,
             timeout=3,
         )

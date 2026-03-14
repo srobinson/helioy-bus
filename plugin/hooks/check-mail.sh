@@ -64,15 +64,24 @@ fi
 
 CONTEXT="[helioy-bus] ${COUNT} pending message(s) for '${AGENT_ID}' from: ${SENDERS} — call get_messages to read."
 
+# Read hook input to detect event type. PreToolUse input contains "tool_name",
+# UserPromptSubmit input contains "prompt". Default to PreToolUse.
+HOOK_INPUT=$(cat /dev/stdin 2>/dev/null || true)
+if printf '%s' "$HOOK_INPUT" | grep -q '"prompt"' 2>/dev/null; then
+    EVENT_NAME="UserPromptSubmit"
+else
+    EVENT_NAME="PreToolUse"
+fi
+
 # Emit hook response with additionalContext.
 # The || exit 0 guard ensures a python3 failure never blocks tool use.
 python3 -c "
 import json, sys
-ctx = sys.stdin.read()
+ctx, event = sys.argv[1], sys.argv[2]
 print(json.dumps({
     'hookSpecificOutput': {
-        'hookEventName': 'PreToolUse',
+        'hookEventName': event,
         'additionalContext': ctx,
     }
 }))
-" <<< "$CONTEXT" || exit 0
+" "$CONTEXT" "$EVENT_NAME" || exit 0
