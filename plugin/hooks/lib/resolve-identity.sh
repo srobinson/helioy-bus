@@ -89,6 +89,46 @@ resolve_agent_id() {
         return 0
     fi
 
+    # Step 2.75: Parse --agent from parent process command line.
+    # When `claude --agent voltagent-lang:rust-engineer` is run manually,
+    # the pane title isn't set yet at SessionStart time. The process args
+    # are the only reliable source of the agent type in this case.
+    local _cli_agent_type=""
+    if [[ -z "$_cli_agent_type" ]]; then
+        local _parent_args
+        _parent_args=$(ps -p "$PPID" -o args= 2>/dev/null || true)
+        if [[ -n "$_parent_args" ]]; then
+            # Extract value after --agent (handles both --agent=VAL and --agent VAL)
+            _cli_agent_type=$(printf '%s' "$_parent_args" \
+                | grep -oE -- '--agent[= ][^ ]+' \
+                | head -1 \
+                | sed 's/^--agent[= ]//' || true)
+        fi
+    fi
+
+    if [[ -n "$_cli_agent_type" ]] \
+        && printf '%s' "$_cli_agent_type" | grep -qE "$_BARE_AGENT_TYPE_PATTERN"; then
+
+        local repo
+        if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+            repo="$(basename "$CLAUDE_PROJECT_DIR")"
+        else
+            repo="$(basename "${PWD:-unknown}")"
+        fi
+
+        HELIOY_AGENT_REPO="$repo"
+        HELIOY_AGENT_TYPE="$_cli_agent_type"
+
+        if [[ -n "$tmux_target" ]]; then
+            HELIOY_AGENT_ID="${repo}:${_cli_agent_type}:${tmux_target}"
+        else
+            HELIOY_AGENT_ID="${repo}:${_cli_agent_type}"
+        fi
+
+        export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO
+        return 0
+    fi
+
     # Step 3: Fallback — derive from CLAUDE_PROJECT_DIR or PWD.
     local repo
     if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then

@@ -2,11 +2,19 @@
 # warroom.sh — Dual-mode agent spawner for the helioy ecosystem.
 #
 # Usage:
-#   warroom.sh                        # repo-mode: one agent per helioy repo
-#   warroom.sh "type1 type2 ..."      # role-mode: named specialist agents in $PWD
-#   warroom.sh kill                   # kill warroom window
-#   warroom.sh kill crew              # kill crew window
-#   warroom.sh kill all               # kill both windows
+#   warroom.sh                              # repo-mode: one agent per helioy repo
+#   warroom.sh <name> "type1 type2 ..."     # role-mode: named window of specialists
+#   warroom.sh kill <name>                  # kill one named window
+#   warroom.sh kill all                     # kill all warroom windows
+#   warroom.sh status                       # list all warroom agents by window
+#
+# Examples:
+#   warroom.sh design "brand-guardian ui-designer visual-storyteller"
+#   warroom.sh engineering "senior-developer frontend-engineer"
+#   warroom.sh review "clinical-reviewer code-reviewer"
+#
+# Each named window is idempotent: re-running the same name kills the old
+# window and creates a fresh one.
 #
 # Pane title format: {repo}:{agent_type}:{session}:{window}.{pane}
 # This is the source of truth for agent identity resolution in bus hooks.
@@ -39,12 +47,73 @@ kill_window() {
 }
 
 if [[ "${1:-}" == "kill" ]]; then
-    target="${2:-warroom}"
+    target="${2:-}"
+    if [[ -z "$target" ]]; then
+        echo "usage: warroom.sh kill <name|all>" >&2
+        exit 1
+    fi
     if [[ "$target" == "all" ]]; then
+        # Kill repo-mode window
         kill_window "warroom"
-        kill_window "crew"
+        # Kill all role-mode windows by scanning for panes with warroom identity titles
+        session=$(tmux display-message -p '#{session_name}')
+        tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | while read -r wname; do
+            # Check if any pane in this window has the repo:type:session:w.p title format
+            has_warroom_pane=$(tmux list-panes -t "${session}:${wname}" \
+                -F '#{pane_title}' 2>/dev/null \
+                | grep -cE '^[^:]+:[^:]+:[^:]+:[0-9]+\.[0-9]+$' || true)
+            if [[ "$has_warroom_pane" -gt 0 ]]; then
+                kill_window "$wname"
+            fi
+        done
     else
         kill_window "$target"
+    fi
+    exit 0
+fi
+
+# ── Status ────────────────────────────────────────────────────────────────────
+
+if [[ "${1:-}" == "status" ]]; then
+    session=$(tmux display-message -p '#{session_name}')
+    found=0
+
+    tmux list-windows -t "$session" -F '#{window_index} #{window_name}' 2>/dev/null | while read -r widx wname; do
+        panes=()
+        while IFS= read -r line; do
+            panes+=("$line")
+        done < <(tmux list-panes -t "${session}:${widx}" \
+            -F '#{pane_index} #{pane_title} #{pane_pid}' 2>/dev/null)
+
+        # Filter to panes with warroom identity titles
+        warroom_panes=()
+        for p in "${panes[@]}"; do
+            title=$(echo "$p" | awk '{print $2}')
+            if [[ "$title" =~ ^[^:]+:[^:]+:[^:]+:[0-9]+\.[0-9]+$ ]]; then
+                warroom_panes+=("$p")
+            fi
+        done
+
+        if [[ ${#warroom_panes[@]} -eq 0 ]]; then
+            continue
+        fi
+
+        found=1
+        echo "── $wname (window $widx) ──"
+        for p in "${warroom_panes[@]}"; do
+            pane_idx=$(echo "$p" | awk '{print $1}')
+            title=$(echo "$p" | awk '{print $2}')
+            pid=$(echo "$p" | awk '{print $3}')
+            # Parse repo and agent_type from title
+            repo=$(echo "$title" | cut -d: -f1)
+            agent_type=$(echo "$title" | cut -d: -f2)
+            printf "  pane %s  %-20s  %-25s  pid %s\n" "$pane_idx" "$repo" "$agent_type" "$pid"
+        done
+        echo ""
+    done
+
+    if [[ "$found" -eq 0 ]]; then
+        echo "no warroom agents running"
     fi
     exit 0
 fi
@@ -65,7 +134,7 @@ setup_pane() {
     local repo="$2"
     local agent_type="$3"
 
-    # Get session:window_index.pane_index — cannot be known before the split.
+    # Get session:window_index.pane_index
     local tmux_target
     tmux_target=$(tmux display-message -p -t "$pane_id" \
         '#{session_name}:#{window_index}.#{pane_index}')
@@ -120,7 +189,7 @@ if [[ $# -eq 0 ]]; then
     tmux send-keys -t "$first_pane" "$CLAUDE" Enter
 
     # Split for remaining repos
-    for i in $(seq 1 $(( ${#dirs[@]} - 1 ))); do
+    for (( i=1; i < ${#dirs[@]}; i++ )); do
         pane_id=$(tmux split-window -t "$WINDOW" -c "${dirs[$i]}" -P -F '#{pane_id}')
         setup_pane "$pane_id" "${names[$i]}" "general"
         tmux send-keys -t "$pane_id" "$CLAUDE" Enter
@@ -133,9 +202,16 @@ if [[ $# -eq 0 ]]; then
 else
 
     # ── Role-mode ─────────────────────────────────────────────────────────────
-    # One pane per agent type, window named "crew", repo = basename($PWD).
+    # warroom.sh <window-name> "type1 type2 ..."
+    # One pane per agent type, repo = basename($PWD).
 
-    WINDOW="crew"
+    WINDOW="$1"
+    shift
+
+    if [[ $# -eq 0 ]]; then
+        echo "usage: warroom.sh <window-name> \"type1 type2 ...\"" >&2
+        exit 1
+    fi
 
     IFS=' ' read -r -a agent_types <<< "$1"
 
@@ -147,6 +223,9 @@ else
     repo="$(basename "$PWD")"
     cwd="$PWD"
 
+    # Idempotent: kill existing window with this name before creating
+    tmux kill-window -t "$WINDOW" 2>/dev/null || true
+
     # Create window with first agent type
     first_pane=$(tmux new-window -n "$WINDOW" -c "$cwd" -P -F '#{pane_id}')
     setup_pane "$first_pane" "$repo" "${agent_types[0]}"
@@ -154,7 +233,7 @@ else
     tmux send-keys -t "$first_pane" "$CLAUDE --agent ${agent_types[0]}" Enter
 
     # Split for remaining agent types
-    for i in $(seq 1 $(( ${#agent_types[@]} - 1 ))); do
+    for (( i=1; i < ${#agent_types[@]}; i++ )); do
         pane_id=$(tmux split-window -t "$WINDOW" -c "$cwd" -P -F '#{pane_id}')
         setup_pane "$pane_id" "$repo" "${agent_types[$i]}"
         tmux send-keys -t "$pane_id" "$CLAUDE --agent ${agent_types[$i]}" Enter
@@ -162,6 +241,6 @@ else
     done
 
     tmux select-layout -t "$WINDOW" tiled
-    echo "crew ready: ${#agent_types[@]} agents (${agent_types[*]}) in $repo"
+    echo "$WINDOW ready: ${#agent_types[@]} agents (${agent_types[*]}) in $repo"
 
 fi

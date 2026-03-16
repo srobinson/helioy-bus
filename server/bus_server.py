@@ -118,6 +118,28 @@ def _dbg(msg: str) -> None:
 
 
 @mcp.tool()
+def whoami() -> dict:
+    """Return this agent's identity as registered on the bus.
+
+    Resolves the calling process's agent_id via the PID file written at
+    SessionStart, then looks up the full registration record.
+
+    Returns:
+        {agent_id, agent_type, tmux_target, cwd, registered_at}
+        or {error} if not registered.
+    """
+    agent_id = _self_agent_id()
+    with db() as conn:
+        row = conn.execute(
+            "SELECT agent_id, agent_type, tmux_target, cwd, registered_at FROM agents WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()
+    if row is None:
+        return {"error": f"Not registered on bus. Resolved agent_id: {agent_id!r}"}
+    return dict(row)
+
+
+@mcp.tool()
 def register_agent(
     pwd: str,
     tmux_target: str = "",
@@ -181,8 +203,14 @@ def register_agent(
 
 
 @mcp.tool()
-def list_agents() -> list[dict]:
+def list_agents(tmux_filter: str = "") -> list[dict]:
     """List all registered agents, lazily pruning dead tmux panes.
+
+    Args:
+        tmux_filter: Optional tmux scope filter. Accepts "session" to list
+                     agents in that tmux session, or "session:window" to
+                     narrow to a specific window. Agents are matched by
+                     their tmux_target prefix. Omit to list all agents.
 
     Returns a list of agent cards with: agent_id, cwd, tmux_target,
     pid, registered_at, last_seen. Agents whose tmux pane no longer
@@ -207,10 +235,25 @@ def list_agents() -> list[dict]:
                 f"DELETE FROM agents WHERE agent_id IN ({placeholders})", dead_ids
             )
 
+    # Build prefix matcher from tmux_filter.
+    # "mysession" matches "mysession:0.1", "mysession:1.0", etc.
+    # "mysession:2" matches "mysession:2.0", "mysession:2.1", etc.
+    if tmux_filter:
+        if ":" in tmux_filter:
+            # session:window -- match targets starting with "session:window."
+            prefix = tmux_filter + "."
+        else:
+            # session only -- match targets starting with "session:"
+            prefix = tmux_filter + ":"
+
     result = []
     for a in agents:
         if a["agent_id"] in dead_ids:
             continue
+        if tmux_filter:
+            target = a.get("tmux_target", "")
+            if not target.startswith(prefix):
+                continue
         if a.get("profile"):
             with contextlib.suppress(json.JSONDecodeError, TypeError):
                 a["profile"] = json.loads(a["profile"])

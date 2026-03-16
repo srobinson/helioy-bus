@@ -83,6 +83,40 @@ def test_list_agents_after_register():
     assert "beta" in ids
 
 
+def test_list_agents_filter_by_session():
+    """tmux_filter='session' returns only agents in that session."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/a", tmux_target="work:0.0", agent_id="a:work:0.0")
+    bm.register_agent(pwd="/tmp/b", tmux_target="work:1.0", agent_id="b:work:1.0")
+    bm.register_agent(pwd="/tmp/c", tmux_target="other:0.0", agent_id="c:other:0.0")
+
+    with patch.object(bm, "_tmux_pane_alive", return_value=True):
+        agents = bm.list_agents(tmux_filter="work")
+
+    ids = [a["agent_id"] for a in agents]
+    assert "a:work:0.0" in ids
+    assert "b:work:1.0" in ids
+    assert "c:other:0.0" not in ids
+
+
+def test_list_agents_filter_by_session_and_window():
+    """tmux_filter='session:window' narrows to a specific window."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/a", tmux_target="work:0.0", agent_id="a:work:0.0")
+    bm.register_agent(pwd="/tmp/b", tmux_target="work:0.1", agent_id="b:work:0.1")
+    bm.register_agent(pwd="/tmp/c", tmux_target="work:1.0", agent_id="c:work:1.0")
+
+    with patch.object(bm, "_tmux_pane_alive", return_value=True):
+        agents = bm.list_agents(tmux_filter="work:0")
+
+    ids = [a["agent_id"] for a in agents]
+    assert "a:work:0.0" in ids
+    assert "b:work:0.1" in ids
+    assert "c:work:1.0" not in ids
+
+
 def test_unregister_agent():
     import server.bus_server as bm
 
