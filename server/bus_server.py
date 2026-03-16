@@ -11,9 +11,11 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -26,6 +28,8 @@ from mcp.server.fastmcp import FastMCP
 BUS_DIR = Path.home() / ".helioy" / "bus"
 REGISTRY_DB = BUS_DIR / "registry.db"
 INBOX_DIR = BUS_DIR / "inbox"
+PRESETS_DIR = BUS_DIR / "presets"
+PLUGINS_CACHE = Path.home() / ".claude" / "plugins" / "cache"
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
@@ -54,6 +58,23 @@ def _init_db(conn: sqlite3.Connection) -> None:
             nudged_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_nudge_log_agent ON nudge_log(agent_id, nudged_at);
+        CREATE TABLE IF NOT EXISTS warrooms (
+            warroom_id   TEXT PRIMARY KEY,
+            tmux_session TEXT NOT NULL,
+            tmux_window  TEXT NOT NULL,
+            cwd          TEXT NOT NULL,
+            created_at   TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'active'
+        );
+        CREATE TABLE IF NOT EXISTS warroom_members (
+            warroom_id   TEXT NOT NULL REFERENCES warrooms(warroom_id) ON DELETE CASCADE,
+            agent_type   TEXT NOT NULL,
+            tmux_target  TEXT NOT NULL,
+            pane_id      TEXT NOT NULL,
+            agent_id     TEXT,
+            spawned_at   TEXT NOT NULL,
+            PRIMARY KEY (warroom_id, agent_type)
+        );
     """)
     # Migration: add session_id column for existing databases
     with contextlib.suppress(sqlite3.OperationalError):
@@ -574,6 +595,604 @@ def _tmux_nudge(tmux_target: str) -> bool:
     except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
         _dbg(f"_tmux_nudge: target={tmux_target!r} exception={e!r}")
         return False
+
+
+# ── Warroom internals ──────────────────────────────────────────────────────────
+
+# In-memory cache for agent type scanning
+_agent_types_cache: list[dict] = []
+_agent_types_cache_ts: float = 0.0
+_AGENT_TYPES_TTL = 60.0  # seconds
+
+# Namespace priority for short-name resolution (lower index = higher priority)
+_NAMESPACE_PRIORITY = ["helioy-tools", "pr-review-toolkit"]
+
+
+def _parse_frontmatter(path: Path) -> dict | None:
+    """Extract scalar frontmatter fields from a markdown agent definition.
+
+    Uses regex to avoid a pyyaml dependency. Returns None if the file
+    has no valid frontmatter block.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
+    if not m:
+        return None
+    block = m.group(1)
+    result: dict[str, str] = {}
+    for line in block.splitlines():
+        # Match key: value (scalar only, skip lists/dicts)
+        kv = re.match(r'^(\w[\w-]*)\s*:\s*"?([^"\n]+?)"?\s*$', line)
+        if kv:
+            result[kv.group(1)] = kv.group(2).strip()
+    return result if result else None
+
+
+def _scan_agent_types() -> list[dict]:
+    """Walk the plugin cache and return all discovered agent type definitions.
+
+    Results are cached in memory for 60 seconds. Multiple versions of the
+    same plugin are deduplicated by keeping the newest mtime.
+    """
+    global _agent_types_cache, _agent_types_cache_ts
+
+    now = time.monotonic()
+    if _agent_types_cache and (now - _agent_types_cache_ts) < _AGENT_TYPES_TTL:
+        return _agent_types_cache
+
+    # Discover all agents directories at any depth under the plugin cache
+    agents: dict[str, dict] = {}  # keyed by qualified_name for dedup
+
+    if not PLUGINS_CACHE.is_dir():
+        _agent_types_cache = []
+        _agent_types_cache_ts = now
+        return []
+
+    for md_path in PLUGINS_CACHE.rglob("agents/*.md"):
+        fm = _parse_frontmatter(md_path)
+        if not fm or "name" not in fm:
+            continue
+
+        # Derive namespace from the directory structure.
+        # Pattern: cache/{org}/{plugin}/{version}/agents/*.md
+        # Namespace = plugin name (second component under cache).
+        rel = md_path.relative_to(PLUGINS_CACHE)
+        parts = rel.parts
+        # We need at least: org / plugin / version / agents / file.md
+        if len(parts) < 4:
+            continue
+        namespace = parts[1]  # plugin name
+
+        short_name = fm["name"]
+        qualified = f"{namespace}:{short_name}"
+        mtime = md_path.stat().st_mtime
+
+        # Deduplicate: keep the entry with the newest mtime
+        if qualified in agents and agents[qualified].get("_mtime", 0) >= mtime:
+            continue
+
+        summary = fm.get("description", "")
+        # Truncate long descriptions for the discovery listing
+        if len(summary) > 200:
+            summary = summary[:197] + "..."
+
+        agents[qualified] = {
+            "qualified_name": qualified,
+            "name": short_name,
+            "namespace": namespace,
+            "summary": summary,
+            "model": fm.get("model", ""),
+            "_mtime": mtime,
+        }
+
+    # Strip internal fields and sort
+    result = []
+    for entry in sorted(agents.values(), key=lambda e: e["qualified_name"]):
+        clean = {k: v for k, v in entry.items() if not k.startswith("_")}
+        result.append(clean)
+
+    _agent_types_cache = result
+    _agent_types_cache_ts = now
+    return result
+
+
+def _resolve_agent_type(name: str) -> dict | None:
+    """Resolve a short or qualified agent type name to its definition.
+
+    Resolution order:
+    1. Qualified name (contains ':'): exact match.
+    2. Exact short_name match with namespace priority.
+    3. None if no match found.
+    """
+    all_types = _scan_agent_types()
+
+    if ":" in name:
+        for agent in all_types:
+            if agent["qualified_name"] == name:
+                return agent
+        return None
+
+    # Short name: collect all matches
+    matches = [a for a in all_types if a["name"] == name]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+
+    # Multiple matches: apply namespace priority
+    for ns in _NAMESPACE_PRIORITY:
+        for m in matches:
+            if m["namespace"] == ns:
+                return m
+    # Fallback: first alphabetically by namespace
+    return matches[0]
+
+
+def _tmux_check(*args: str) -> str:
+    """Run a tmux command and return stdout. Raises RuntimeError on failure."""
+    try:
+        result = subprocess.run(
+            ["tmux", *args],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode().strip()
+            raise RuntimeError(f"tmux {args[0]} failed: {stderr}")
+        return result.stdout.decode().strip()
+    except FileNotFoundError:
+        raise RuntimeError("tmux is not installed or not in PATH")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"tmux {args[0]} timed out")
+
+
+def _spawn_pane(
+    session: str,
+    window: str,
+    cwd: str,
+    agent_type: str,
+    qualified_name: str,
+    is_first: bool,
+    layout: str,
+) -> dict:
+    """Create a single tmux pane running a Claude Code agent.
+
+    Returns a dict with tmux_target, pane_id, and agent_type.
+    The ordering contract: pane title is set BEFORE send-keys so that
+    identity resolution works when the SessionStart hook fires.
+    """
+    repo = os.path.basename(cwd)
+
+    if is_first:
+        # Create new window (first pane comes free)
+        raw = _tmux_check(
+            "new-window", "-t", session, "-n", window,
+            "-c", cwd, "-P", "-F", "#{pane_id}",
+        )
+        pane_id = raw.strip()
+    else:
+        # Split from the window target
+        raw = _tmux_check(
+            "split-window", "-t", f"{session}:{window}",
+            "-c", cwd, "-P", "-F", "#{pane_id}",
+        )
+        pane_id = raw.strip()
+
+    # Resolve the full tmux_target (session:window.pane)
+    target_raw = _tmux_check(
+        "display-message", "-t", pane_id,
+        "-p", "#{session_id}:#{window_index}.#{pane_index}",
+    )
+    # display-message returns $N:W.P but we need the session name, not $id
+    # Use list-panes to get the canonical target
+    pane_info = _tmux_check(
+        "display-message", "-t", pane_id,
+        "-p", "#{session_name}:#{window_index}.#{pane_index}",
+    )
+    tmux_target = pane_info.strip()
+
+    # Set pane title BEFORE launching claude (identity resolution depends on this)
+    identity = f"{repo}:{qualified_name}:{tmux_target}"
+    _tmux_check("select-pane", "-t", pane_id, "-T", identity)
+
+    # Lock pane rename (window-level, only needed once per window)
+    if is_first:
+        _tmux_check(
+            "set-option", "-t", f"{session}:{window}",
+            "allow-rename", "off",
+        )
+
+    # Launch claude code with the agent type
+    cmd = f"claude --verbose --dangerously-skip-permissions --agent {qualified_name}"
+    _tmux_check("send-keys", "-t", pane_id, cmd, "Enter")
+
+    # Reflow layout after each split
+    _tmux_check("select-layout", "-t", f"{session}:{window}", layout)
+
+    return {
+        "agent_type": agent_type,
+        "qualified_name": qualified_name,
+        "tmux_target": tmux_target,
+        "pane_id": pane_id,
+    }
+
+
+# ── Warroom MCP tools ─────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def warroom_discover(
+    query: str = "",
+    namespace: str = "",
+    limit: int = 20,
+) -> dict:
+    """Search available agent types that can be spawned in a warroom.
+
+    Scans the Claude Code plugin cache for agent definitions and returns
+    matching entries. Uses an in-memory cache with 60s TTL.
+
+    Args:
+        query: Substring match against agent name and description. Empty returns all.
+        namespace: Filter to a specific plugin namespace (e.g. 'helioy-tools'). Empty returns all.
+        limit: Maximum number of results to return (default 20).
+
+    Returns:
+        {agents: [...], total: int, namespaces: [...]}
+    """
+    all_types = _scan_agent_types()
+
+    # Collect unique namespaces
+    all_namespaces = sorted({a["namespace"] for a in all_types})
+
+    # Apply filters
+    filtered = all_types
+    if namespace:
+        filtered = [a for a in filtered if a["namespace"] == namespace]
+    if query:
+        q = query.lower()
+        filtered = [
+            a for a in filtered
+            if q in a["name"].lower() or q in a.get("summary", "").lower()
+        ]
+
+    total = len(filtered)
+    return {
+        "agents": filtered[:limit],
+        "total": total,
+        "namespaces": all_namespaces,
+    }
+
+
+@mcp.tool()
+def warroom_spawn(
+    name: str,
+    agents: list[str],
+    cwd: str = "",
+    layout: str = "tiled",
+) -> dict:
+    """Create a warroom: a tmux window with one Claude Code pane per agent type.
+
+    Idempotent: kills any existing warroom with the same name first. Validates
+    all agent types before spawning any panes. Returns immediately without
+    waiting for agents to register on the bus.
+
+    Args:
+        name: Warroom identifier, becomes the tmux window name.
+              Alphanumeric and hyphens only, 1-30 chars.
+        agents: List of agent type names (qualified like 'helioy-tools:backend-engineer'
+                or short like 'backend-engineer'). Maximum 8 agents.
+        cwd: Working directory for all panes. Defaults to caller's cwd.
+        layout: tmux layout algorithm (tiled, even-horizontal, even-vertical,
+                main-horizontal, main-vertical). Default: tiled.
+
+    Returns:
+        {warroom_id, tmux_window, members: [...], spawned_at}
+    """
+    # Validate name
+    if not name or not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,29}$", name):
+        return {"error": "Name must be 1-30 chars, alphanumeric and hyphens, starting with alphanumeric."}
+
+    if not agents:
+        return {"error": "At least one agent type is required."}
+    if len(agents) > 8:
+        return {"error": "Maximum 8 agents per warroom."}
+
+    valid_layouts = {"tiled", "even-horizontal", "even-vertical", "main-horizontal", "main-vertical"}
+    if layout not in valid_layouts:
+        return {"error": f"Invalid layout. Choose from: {', '.join(sorted(valid_layouts))}"}
+
+    # Check we're inside tmux
+    tmux_env = os.environ.get("TMUX", "")
+    if not tmux_env:
+        return {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
+
+    # Resolve the current tmux session name
+    try:
+        session = _tmux_check("display-message", "-p", "#{session_name}")
+    except RuntimeError as e:
+        return {"error": f"Cannot determine tmux session: {e}"}
+
+    if not cwd:
+        cwd = os.getcwd()
+
+    # Resolve all agent types before spawning anything
+    resolved = []
+    errors = []
+    all_types = _scan_agent_types()
+    for agent_name in agents:
+        agent_def = _resolve_agent_type(agent_name)
+        if agent_def is None:
+            # Build fuzzy suggestions
+            q = agent_name.lower()
+            suggestions = [
+                a["qualified_name"] for a in all_types
+                if q in a["name"].lower() or q in a.get("summary", "").lower()
+            ][:5]
+            errors.append({
+                "agent": agent_name,
+                "error": "Unknown agent type",
+                "suggestions": suggestions,
+            })
+        else:
+            resolved.append(agent_def)
+
+    if errors:
+        return {"error": "Unknown agent types", "details": errors}
+
+    # Idempotent: kill existing warroom with same name
+    warroom_kill(name=name)
+
+    # Spawn panes
+    now = _now()
+    members = []
+    spawn_errors = []
+    for i, agent_def in enumerate(resolved):
+        try:
+            pane_info = _spawn_pane(
+                session=session,
+                window=name,
+                cwd=cwd,
+                agent_type=agent_def["name"],
+                qualified_name=agent_def["qualified_name"],
+                is_first=(i == 0),
+                layout=layout,
+            )
+            members.append(pane_info)
+        except RuntimeError as e:
+            spawn_errors.append({
+                "agent_type": agent_def["qualified_name"],
+                "error": str(e),
+            })
+
+    # Record in SQLite
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            """INSERT OR REPLACE INTO warrooms
+               (warroom_id, tmux_session, tmux_window, cwd, created_at, status)
+               VALUES (?, ?, ?, ?, ?, 'active')""",
+            (name, session, name, cwd, now),
+        )
+        for m in members:
+            conn.execute(
+                """INSERT OR REPLACE INTO warroom_members
+                   (warroom_id, agent_type, tmux_target, pane_id, agent_id, spawned_at)
+                   VALUES (?, ?, ?, ?, NULL, ?)""",
+                (name, m["qualified_name"], m["tmux_target"], m["pane_id"], now),
+            )
+
+    result = {
+        "warroom_id": name,
+        "tmux_window": name,
+        "members": [
+            {k: v for k, v in m.items() if k != "pane_id"} | {"pane_id": m["pane_id"]}
+            for m in members
+        ],
+        "spawned_at": now,
+    }
+    if spawn_errors:
+        result["errors"] = spawn_errors
+    return result
+
+
+@mcp.tool()
+def warroom_kill(
+    name: str = "",
+    kill_all: bool = False,
+) -> dict:
+    """Tear down a warroom by name, or all warrooms.
+
+    Kills the tmux window and removes the warroom from the database.
+
+    Args:
+        name: Warroom name to kill. Required unless kill_all is True.
+        kill_all: Kill all active warrooms. Default False.
+
+    Returns:
+        {killed: [...], errors: [...]}
+    """
+    if not name and not kill_all:
+        return {"error": "Provide a warroom name or set kill_all=True."}
+
+    killed = []
+    errors = []
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        if kill_all:
+            rows = conn.execute(
+                "SELECT warroom_id, tmux_session, tmux_window FROM warrooms WHERE status = 'active'"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT warroom_id, tmux_session, tmux_window FROM warrooms WHERE warroom_id = ?",
+                (name,),
+            ).fetchall()
+
+        for row in rows:
+            wid = row["warroom_id"]
+            target = f"{row['tmux_session']}:{row['tmux_window']}"
+            try:
+                subprocess.run(
+                    ["tmux", "kill-window", "-t", target],
+                    capture_output=True, timeout=5,
+                )
+            except (subprocess.SubprocessError, FileNotFoundError):
+                pass  # Window may already be gone
+
+            conn.execute("DELETE FROM warroom_members WHERE warroom_id = ?", (wid,))
+            conn.execute("DELETE FROM warrooms WHERE warroom_id = ?", (wid,))
+            killed.append(wid)
+
+    return {"killed": killed, "errors": errors}
+
+
+@mcp.tool()
+def warroom_status(
+    name: str = "",
+) -> list[dict]:
+    """Get live status of warrooms with agent registration cross-referencing.
+
+    Cross-references warroom_members.tmux_target with the agents table to
+    determine which spawned agents have registered on the bus.
+
+    Args:
+        name: Specific warroom name. Empty returns all active warrooms.
+
+    Returns:
+        List of warroom status dicts with member details including
+        registration state and pane liveness.
+    """
+    with db() as conn:
+        if name:
+            warrooms = conn.execute(
+                "SELECT * FROM warrooms WHERE warroom_id = ?", (name,)
+            ).fetchall()
+        else:
+            warrooms = conn.execute(
+                "SELECT * FROM warrooms WHERE status = 'active'"
+            ).fetchall()
+
+        result = []
+        for wr in warrooms:
+            wid = wr["warroom_id"]
+            members_rows = conn.execute(
+                "SELECT * FROM warroom_members WHERE warroom_id = ?", (wid,)
+            ).fetchall()
+
+            members = []
+            for m in members_rows:
+                tmux_target = m["tmux_target"]
+                pane_alive = _tmux_pane_alive(tmux_target)
+
+                # Cross-reference with agents table to find registration
+                agent_row = conn.execute(
+                    "SELECT agent_id FROM agents WHERE tmux_target = ?",
+                    (tmux_target,),
+                ).fetchone()
+
+                registered = agent_row is not None
+                agent_id = agent_row["agent_id"] if agent_row else m["agent_id"]
+
+                # Backfill agent_id in warroom_members if newly registered
+                if registered and not m["agent_id"]:
+                    conn.execute(
+                        "UPDATE warroom_members SET agent_id = ? WHERE warroom_id = ? AND agent_type = ?",
+                        (agent_id, wid, m["agent_type"]),
+                    )
+
+                members.append({
+                    "agent_type": m["agent_type"],
+                    "tmux_target": tmux_target,
+                    "pane_id": m["pane_id"],
+                    "agent_id": agent_id,
+                    "registered": registered,
+                    "pane_alive": pane_alive,
+                    "spawned_at": m["spawned_at"],
+                })
+
+            result.append({
+                "warroom_id": wid,
+                "tmux_session": wr["tmux_session"],
+                "tmux_window": wr["tmux_window"],
+                "cwd": wr["cwd"],
+                "status": wr["status"],
+                "created_at": wr["created_at"],
+                "members": members,
+            })
+
+    return result
+
+
+@mcp.tool()
+def warroom_presets() -> dict:
+    """List available warroom preset team compositions.
+
+    Reads preset JSON files from ~/.helioy/bus/presets/. Each preset
+    defines a reusable team composition with agent types and metadata.
+
+    Returns:
+        {presets: [{name, description, agents, tags}, ...]}
+    """
+    presets = []
+    if not PRESETS_DIR.is_dir():
+        return {"presets": []}
+
+    for path in sorted(PRESETS_DIR.glob("*.json")):
+        try:
+            data = json.loads(path.read_text())
+            presets.append({
+                "name": data.get("name", path.stem),
+                "description": data.get("description", ""),
+                "agents": data.get("agents", []),
+                "tags": data.get("tags", []),
+            })
+        except (json.JSONDecodeError, OSError):
+            continue
+
+    return {"presets": presets}
+
+
+@mcp.tool()
+def warroom_save_preset(
+    name: str,
+    agents: list[str],
+    description: str = "",
+    tags: list[str] | None = None,
+) -> dict:
+    """Save a warroom team composition as a reusable preset.
+
+    Writes a JSON file to ~/.helioy/bus/presets/{name}.json.
+
+    Args:
+        name: Preset name (becomes the filename). Alphanumeric and hyphens only.
+        agents: List of agent type names (qualified or short).
+        description: Human-readable description of this team composition.
+        tags: Optional list of tags for categorization.
+
+    Returns:
+        {saved: name, path: str}
+    """
+    if not name or not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,49}$", name):
+        return {"error": "Name must be 1-50 chars, alphanumeric and hyphens, starting with alphanumeric."}
+    if not agents:
+        return {"error": "At least one agent type is required."}
+
+    PRESETS_DIR.mkdir(parents=True, exist_ok=True)
+    preset_path = PRESETS_DIR / f"{name}.json"
+
+    data = {
+        "name": name,
+        "description": description,
+        "agents": agents,
+        "tags": tags or [],
+    }
+
+    preset_path.write_text(json.dumps(data, indent=2))
+    return {"saved": name, "path": str(preset_path)}
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
