@@ -26,7 +26,6 @@ import sys
 from pathlib import Path
 
 WATCH_DIR = Path(__file__).parent
-SERVER_SCRIPT = WATCH_DIR / "bus_server.py"
 PYTHON = sys.executable
 
 
@@ -146,4 +145,6 @@ class HotReloadProxy:
 
 
 if __name__ == "__main__":
+    target = sys.argv[1] if len(sys.argv) > 1 else "bus_server.py"
+    SERVER_SCRIPT = WATCH_DIR / target
     asyncio.run(HotReloadProxy().run())
