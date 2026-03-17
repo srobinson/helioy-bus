@@ -1290,3 +1290,163 @@ def test_warroom_remove_nonexistent_agent(fake_plugins):
 
     result = bm.warroom_remove(name="no-agent", agent="backend-engineer")
     assert "error" in result
+
+
+# ── Token tracking: schema migration ─────────────────────────────────────────
+
+
+def test_token_usage_column_exists():
+    """token_usage column exists in agents table after db init."""
+    from server._db import db
+
+    with db() as conn:
+        # Insert a row and verify token_usage defaults to '{}'
+        conn.execute(
+            "INSERT INTO agents (agent_id, cwd, registered_at, last_seen) VALUES (?, ?, ?, ?)",
+            ("test-token", "/tmp", "2026-01-01", "2026-01-01"),
+        )
+        row = conn.execute(
+            "SELECT token_usage FROM agents WHERE agent_id = 'test-token'"
+        ).fetchone()
+        assert row["token_usage"] == "{}"
+
+
+def test_token_usage_migration_from_older_schema(tmp_path, monkeypatch):
+    """token_usage column is added via migration to older databases."""
+    import sqlite3
+
+    import server._db as _db_mod
+
+    bus_dir = tmp_path / "bus_old"
+    bus_dir.mkdir()
+    monkeypatch.setattr(_db_mod, "BUS_DIR", bus_dir)
+    monkeypatch.setattr(_db_mod, "REGISTRY_DB", bus_dir / "registry.db")
+
+    # Create DB without token_usage column
+    conn = sqlite3.connect(str(bus_dir / "registry.db"))
+    conn.executescript("""
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS agents (
+            agent_id      TEXT PRIMARY KEY,
+            cwd           TEXT NOT NULL,
+            tmux_target   TEXT NOT NULL DEFAULT '',
+            pid           INTEGER,
+            session_id    TEXT NOT NULL DEFAULT '',
+            agent_type    TEXT NOT NULL DEFAULT 'general',
+            profile       TEXT,
+            registered_at TEXT NOT NULL,
+            last_seen     TEXT NOT NULL
+        );
+    """)
+    conn.execute(
+        "INSERT INTO agents (agent_id, cwd, registered_at, last_seen) VALUES (?, ?, ?, ?)",
+        ("old-agent", "/tmp", "2026-01-01", "2026-01-01"),
+    )
+    conn.commit()
+    conn.close()
+
+    # Open with _init_db migration
+    with _db_mod.db() as conn:
+        row = conn.execute(
+            "SELECT token_usage FROM agents WHERE agent_id = 'old-agent'"
+        ).fetchone()
+        assert row["token_usage"] == "{}"
+
+
+# ── Token tracking: list_agents includes token_usage ─────────────────────────
+
+
+def test_list_agents_includes_token_usage():
+    """list_agents returns parsed token_usage JSON."""
+    from server._db import db
+
+    import server.bus_server as bm
+
+    token_data = '{"total_input": 50000, "total_output": 3000, "limit": 200000, "percent": 25.0}'
+    bm.register_agent(pwd="/tmp/tracked", agent_id="tracked")
+    with db() as conn:
+        conn.execute(
+            "UPDATE agents SET token_usage = ? WHERE agent_id = 'tracked'",
+            (token_data,),
+        )
+
+    agents = bm.list_agents()
+    agent = next(a for a in agents if a["agent_id"] == "tracked")
+    assert isinstance(agent["token_usage"], dict)
+    assert agent["token_usage"]["total_input"] == 50000
+    assert agent["token_usage"]["percent"] == 25.0
+
+
+def test_list_agents_empty_token_usage():
+    """list_agents handles empty token_usage gracefully."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/fresh", agent_id="fresh")
+    agents = bm.list_agents()
+    agent = next(a for a in agents if a["agent_id"] == "fresh")
+    # Empty '{}' string should remain as-is (not parsed into dict since it's falsy-ish)
+    assert agent["token_usage"] in ("{}", {})
+
+
+# ── Token tracking: warroom_status includes token_usage ──────────────────────
+
+
+def test_warroom_status_includes_token_usage(monkeypatch):
+    """warroom_status includes token_usage in member dicts."""
+    from server._db import _now, db
+
+    import server.bus_server as bm
+
+    now = _now()
+    token_data = '{"total_input": 85000, "total_output": 5000, "limit": 200000, "percent": 42.5}'
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("token-wr", "main", "token-wr", "/tmp", now, "active"),
+        )
+        conn.execute(
+            "INSERT INTO warroom_members "
+            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("token-wr", "helioy-tools:backend-engineer", "main:3.0", "%30", now),
+        )
+        conn.execute(
+            "INSERT INTO agents "
+            "(agent_id, cwd, tmux_target, pid, registered_at, last_seen, token_usage) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("proj:be:main:3.0", "/tmp", "main:3.0", 1234, now, now, token_data),
+        )
+
+    monkeypatch.setattr(bm, "_tmux_pane_alive", lambda t: True)
+
+    statuses = bm.warroom_status(name="token-wr")
+    member = statuses[0]["members"][0]
+    assert isinstance(member["token_usage"], dict)
+    assert member["token_usage"]["total_input"] == 85000
+    assert member["token_usage"]["percent"] == 42.5
+
+
+# ── Token tracking: whoami includes token_usage ──────────────────────────────
+
+
+def test_whoami_includes_token_usage(monkeypatch):
+    """whoami returns parsed token_usage."""
+    from server._db import db
+
+    import server.bus_server as bm
+
+    token_data = '{"total_input": 20000, "total_output": 1500, "limit": 200000, "percent": 10.0}'
+    bm.register_agent(pwd="/tmp/myproj", agent_id="myproj")
+    with db() as conn:
+        conn.execute(
+            "UPDATE agents SET token_usage = ? WHERE agent_id = 'myproj'",
+            (token_data,),
+        )
+
+    monkeypatch.setattr(bm, "_self_agent_id", lambda: "myproj")
+    result = bm.whoami()
+    assert isinstance(result["token_usage"], dict)
+    assert result["token_usage"]["total_input"] == 20000

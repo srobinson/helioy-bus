@@ -59,18 +59,23 @@ def whoami() -> dict:
     SessionStart, then looks up the full registration record.
 
     Returns:
-        {agent_id, agent_type, tmux_target, cwd, registered_at}
+        {agent_id, agent_type, tmux_target, cwd, registered_at, token_usage}
         or {error} if not registered.
     """
     agent_id = _self_agent_id()
     with db() as conn:
         row = conn.execute(
-            "SELECT agent_id, agent_type, tmux_target, cwd, registered_at FROM agents WHERE agent_id = ?",
+            "SELECT agent_id, agent_type, tmux_target, cwd, registered_at, token_usage"
+            " FROM agents WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()
     if row is None:
         return {"error": f"Not registered on bus. Resolved agent_id: {agent_id!r}"}
-    return dict(row)
+    result = dict(row)
+    if result.get("token_usage"):
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            result["token_usage"] = json.loads(result["token_usage"])
+    return result
 
 
 @mcp.tool()
@@ -187,6 +192,9 @@ def list_agents(tmux_filter: str = "") -> list[dict]:
         if a.get("profile"):
             with contextlib.suppress(json.JSONDecodeError, TypeError):
                 a["profile"] = json.loads(a["profile"])
+        if a.get("token_usage"):
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
+                a["token_usage"] = json.loads(a["token_usage"])
         result.append(a)
     return result
 
@@ -672,12 +680,17 @@ def warroom_status(
 
                 # Cross-reference with agents table to find registration
                 agent_row = conn.execute(
-                    "SELECT agent_id FROM agents WHERE tmux_target = ?",
+                    "SELECT agent_id, token_usage FROM agents WHERE tmux_target = ?",
                     (tmux_target,),
                 ).fetchone()
 
                 registered = agent_row is not None
                 agent_id = agent_row["agent_id"] if agent_row else m["agent_id"]
+                token_usage_raw = agent_row["token_usage"] if agent_row else None
+                token_usage: dict | str | None = token_usage_raw
+                if token_usage_raw:
+                    with contextlib.suppress(json.JSONDecodeError, TypeError):
+                        token_usage = json.loads(token_usage_raw)
 
                 # Backfill agent_id in warroom_members if newly registered
                 if registered and not m["agent_id"]:
@@ -695,6 +708,7 @@ def warroom_status(
                     "registered": registered,
                     "pane_alive": pane_alive,
                     "spawned_at": m["spawned_at"],
+                    "token_usage": token_usage,
                 })
 
             result.append({

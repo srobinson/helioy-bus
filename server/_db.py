@@ -80,6 +80,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
     # Migration: add profile column for existing databases (nullable, no default)
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE agents ADD COLUMN profile TEXT")
+    # Migration: add token_usage column for token tracking
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE agents ADD COLUMN token_usage TEXT NOT NULL DEFAULT '{}'")
 
 
 @contextmanager
