@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""helioy-bus MCP server — inter-agent message bus for Claude Code instances.
+"""helioy-bus MCP server -- inter-agent message bus for Claude Code instances.
 
 stdio transport: each Claude Code instance spawns its own server process.
 Shared state lives in ~/.helioy/bus/ (SQLite registry + file-based mailboxes).
 All agents sharing the same filesystem share the same bus.
+
+Internal modules:
+    _db.py       - Database, path constants, logging
+    _identity.py - Agent identity resolution
+    _tmux.py     - tmux pane management, nudging, spawning
+    _warroom.py  - Agent type discovery and resolution
 """
 
 from __future__ import annotations
@@ -12,128 +18,35 @@ import contextlib
 import json
 import os
 import re
-import sqlite3
 import subprocess
 import tempfile
-import time
 import uuid
-from contextlib import contextmanager
-from datetime import UTC, datetime
-from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-
-BUS_DIR = Path.home() / ".helioy" / "bus"
-REGISTRY_DB = BUS_DIR / "registry.db"
-INBOX_DIR = BUS_DIR / "inbox"
-PRESETS_DIR = BUS_DIR / "presets"
-PLUGINS_CACHE = Path.home() / ".claude" / "plugins" / "cache"
+from server._db import INBOX_DIR, PRESETS_DIR, _dbg, _now, db
+from server._identity import _self_agent_id
+from server._tmux import (
+    NUDGE_THROTTLE_SECONDS,  # noqa: F401 (re-exported for tests)
+    _inbox_has_unread,  # noqa: F401
+    _nudge_allowed,
+    _record_nudge,
+    _spawn_pane,
+    _tmux_check,
+    _tmux_nudge,
+    _tmux_pane_alive,
+)
+from server._warroom import (
+    _agent_types_cache,  # noqa: F401 (re-exported for tests)
+    _agent_types_cache_ts,  # noqa: F401
+    _parse_frontmatter,  # noqa: F401
+    _resolve_agent_type,
+    _scan_agent_types,
+)
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 mcp = FastMCP("helioy-bus")
-
-# ── Database ──────────────────────────────────────────────────────────────────
-
-
-def _init_db(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        PRAGMA journal_mode=WAL;
-        PRAGMA synchronous=NORMAL;
-        CREATE TABLE IF NOT EXISTS agents (
-            agent_id      TEXT PRIMARY KEY,
-            cwd           TEXT NOT NULL,
-            tmux_target   TEXT NOT NULL DEFAULT '',
-            pid           INTEGER,
-            session_id    TEXT NOT NULL DEFAULT '',
-            agent_type    TEXT NOT NULL DEFAULT 'general',
-            profile       TEXT,
-            registered_at TEXT NOT NULL,
-            last_seen     TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS nudge_log (
-            agent_id  TEXT NOT NULL,
-            nudged_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_nudge_log_agent ON nudge_log(agent_id, nudged_at);
-        CREATE TABLE IF NOT EXISTS warrooms (
-            warroom_id   TEXT PRIMARY KEY,
-            tmux_session TEXT NOT NULL,
-            tmux_window  TEXT NOT NULL,
-            cwd          TEXT NOT NULL,
-            created_at   TEXT NOT NULL,
-            status       TEXT NOT NULL DEFAULT 'active'
-        );
-        CREATE TABLE IF NOT EXISTS warroom_members (
-            warroom_id   TEXT NOT NULL REFERENCES warrooms(warroom_id) ON DELETE CASCADE,
-            agent_type   TEXT NOT NULL,
-            tmux_target  TEXT NOT NULL,
-            pane_id      TEXT NOT NULL,
-            agent_id     TEXT,
-            spawned_at   TEXT NOT NULL,
-            PRIMARY KEY (warroom_id, agent_type)
-        );
-    """)
-    # Migration: add session_id column for existing databases
-    with contextlib.suppress(sqlite3.OperationalError):
-        conn.execute("ALTER TABLE agents ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
-    # Migration: add agent_type column for existing databases
-    with contextlib.suppress(sqlite3.OperationalError):
-        conn.execute("ALTER TABLE agents ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'general'")
-    # Migration: add profile column for existing databases (nullable, no default)
-    with contextlib.suppress(sqlite3.OperationalError):
-        conn.execute("ALTER TABLE agents ADD COLUMN profile TEXT")
-
-
-@contextmanager
-def db():
-    BUS_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(REGISTRY_DB), timeout=10)
-    conn.row_factory = sqlite3.Row
-    _init_db(conn)
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
-
-
-def _self_agent_id() -> str:
-    """Resolve agent_id for the calling process via the PID file written at SessionStart.
-
-    Tries HELIOY_BUS_CLAUDE_PID (set by proxy.py) first, then os.getppid(),
-    then falls back to basename(cwd).
-    """
-    pids_dir = BUS_DIR / "pids"
-    for pid in filter(None, [os.environ.get("HELIOY_BUS_CLAUDE_PID"), str(os.getppid())]):
-        pid_file = pids_dir / pid
-        if pid_file.exists():
-            resolved = pid_file.read_text().strip()
-            _dbg(f"_self_agent_id: pid={pid} pid_file={pid_file} → {resolved!r}")
-            return resolved
-    resolved = os.path.basename(os.getcwd()) or "unknown"
-    _dbg(f"_self_agent_id: no pid file found (tried HELIOY_BUS_CLAUDE_PID={os.environ.get('HELIOY_BUS_CLAUDE_PID')!r} ppid={os.getppid()}) → {resolved!r}")
-    return resolved
-
-
-LOG_FILE = Path("/tmp/helioy-bus-debug.log")
-
-
-def _dbg(msg: str) -> None:
-    from datetime import datetime as _dt
-    ts = _dt.now().isoformat(timespec="seconds")
-    with LOG_FILE.open("a") as f:
-        f.write(f"[{ts}] {msg}\n")
-
 
 # ── Registry tools ─────────────────────────────────────────────────────────────
 
@@ -260,12 +173,8 @@ def list_agents(tmux_filter: str = "") -> list[dict]:
     # "mysession" matches "mysession:0.1", "mysession:1.0", etc.
     # "mysession:2" matches "mysession:2.0", "mysession:2.1", etc.
     if tmux_filter:
-        if ":" in tmux_filter:
-            # session:window -- match targets starting with "session:window."
-            prefix = tmux_filter + "."
-        else:
-            # session only -- match targets starting with "session:"
-            prefix = tmux_filter + ":"
+        # session:window -> "session:window." prefix; session -> "session:" prefix
+        prefix = tmux_filter + ("." if ":" in tmux_filter else ":")
 
     result = []
     for a in agents:
@@ -317,55 +226,6 @@ def heartbeat(agent_id: str) -> dict:
 
 
 # ── Mailbox tools ─────────────────────────────────────────────────────────────
-
-NUDGE_THROTTLE_SECONDS = 30  # 30 seconds
-
-
-def _inbox_has_unread(agent_id: str) -> bool:
-    """Return True if the agent's inbox contains unread messages."""
-    inbox = INBOX_DIR / agent_id
-    if not inbox.exists():
-        return False
-    return bool(list(inbox.glob("*.json")))
-
-
-def _nudge_allowed(agent_id: str) -> bool:
-    """Return True if a nudge should be sent to the agent.
-
-    Allows re-nudging within the throttle window if the inbox still has
-    unread messages, meaning the previous nudge did not wake the agent.
-    """
-    with db() as conn:
-        row = conn.execute(
-            "SELECT nudged_at FROM nudge_log WHERE agent_id = ? ORDER BY nudged_at DESC LIMIT 1",
-            (agent_id,),
-        ).fetchone()
-        if row is None:
-            return True
-        last = row["nudged_at"]
-        from datetime import timedelta
-        cutoff_dt = datetime.now(UTC) - timedelta(seconds=NUDGE_THROTTLE_SECONDS)
-        if last < cutoff_dt.isoformat():
-            return True  # throttle window expired
-        # Within throttle window, but previous nudge may not have worked.
-        # If unread messages remain, the agent never woke up. Re-nudge.
-        if _inbox_has_unread(agent_id):
-            _dbg(f"_nudge_allowed: {agent_id!r} throttled but inbox has unread messages, allowing re-nudge")
-            return True
-        return False
-
-
-def _record_nudge(agent_id: str) -> None:
-    with db() as conn:
-        conn.execute(
-            "INSERT INTO nudge_log (agent_id, nudged_at) VALUES (?, ?)",
-            (agent_id, _now()),
-        )
-        # Prune old entries (keep last 24h)
-        conn.execute(
-            "DELETE FROM nudge_log WHERE nudged_at < ?",
-            (datetime.now(UTC).replace(hour=0, minute=0, second=0).isoformat(),),
-        )
 
 
 @mcp.tool()
@@ -479,7 +339,13 @@ def send_message(
         delivered_to.append(target_id)
 
         # tmux nudge: verify pane alive, respect throttle, record on success
-        if nudge and tmux_target and _nudge_allowed(target_id) and _tmux_pane_alive(tmux_target) and _tmux_nudge(tmux_target):
+        if (
+            nudge
+            and tmux_target
+            and _nudge_allowed(target_id)
+            and _tmux_pane_alive(tmux_target)
+            and _tmux_nudge(tmux_target)
+        ):
             nudged_targets.append(target_id)
             _record_nudge(target_id)
 
@@ -510,7 +376,7 @@ def get_messages(agent_id: str = "", topic: str = "") -> list[dict]:
     _dbg(f"get_messages: agent_id={agent_id!r} topic={topic!r} inbox={inbox} exists={inbox.exists()}")
 
     if not inbox.exists():
-        _dbg("get_messages: inbox missing → []")
+        _dbg("get_messages: inbox missing \u2192 []")
         return []
 
     archive = inbox / "archive"
@@ -532,292 +398,6 @@ def get_messages(agent_id: str = "", topic: str = "") -> list[dict]:
 
     _dbg(f"get_messages: returning {len(messages)} message(s)")
     return messages
-
-
-# ── tmux helpers ───────────────────────────────────────────────────────────────
-
-
-def _tmux_pane_alive(target: str) -> bool:
-    """Return True if the tmux target pane exists and is reachable.
-
-    Uses list-panes rather than has-session so that a dead pane in a live
-    session is correctly reported as gone.
-    """
-    try:
-        result = subprocess.run(
-            ["tmux", "list-panes", "-t", target],
-            capture_output=True,
-            timeout=3,
-        )
-        return result.returncode == 0
-    except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-
-def _tmux_nudge(tmux_target: str) -> bool:
-    """Send a 'you have mail!' keystroke to wake an idle Claude session.
-
-    Exits copy-mode first if the pane is in it (common when user scrolls),
-    then sends literal text followed by Enter as a separate key.
-    """
-    try:
-        # Exit copy-mode if active. -X cancel writes nothing to the app's PTY.
-        mode_result = subprocess.run(
-            ["tmux", "display-message", "-t", tmux_target, "-p", "#{pane_in_mode}"],
-            capture_output=True,
-            timeout=3,
-        )
-        if mode_result.returncode == 0 and mode_result.stdout.decode().strip() == "1":
-            subprocess.run(
-                ["tmux", "send-keys", "-t", tmux_target, "-X", "cancel"],
-                capture_output=True,
-                timeout=3,
-            )
-            _dbg(f"_tmux_nudge: exited copy-mode on {tmux_target!r}")
-
-        # Send literal text, then Enter as a named key (separate call).
-        result = subprocess.run(
-            ["tmux", "send-keys", "-t", tmux_target, "-l", "you have mail!"],
-            capture_output=True,
-            timeout=3,
-        )
-        if result.returncode != 0:
-            _dbg(f"_tmux_nudge: target={tmux_target!r} text rc={result.returncode} stderr={result.stderr.decode().strip()!r}")
-            return False
-
-        result = subprocess.run(
-            ["tmux", "send-keys", "-t", tmux_target, "Enter"],
-            capture_output=True,
-            timeout=3,
-        )
-        _dbg(f"_tmux_nudge: target={tmux_target!r} rc={result.returncode} stderr={result.stderr.decode().strip()!r}")
-        return result.returncode == 0
-    except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
-        _dbg(f"_tmux_nudge: target={tmux_target!r} exception={e!r}")
-        return False
-
-
-# ── Warroom internals ──────────────────────────────────────────────────────────
-
-# In-memory cache for agent type scanning
-_agent_types_cache: list[dict] = []
-_agent_types_cache_ts: float = 0.0
-_AGENT_TYPES_TTL = 60.0  # seconds
-
-# Namespace priority for short-name resolution (lower index = higher priority)
-_NAMESPACE_PRIORITY = ["helioy-tools", "pr-review-toolkit"]
-
-
-def _parse_frontmatter(path: Path) -> dict | None:
-    """Extract scalar frontmatter fields from a markdown agent definition.
-
-    Uses regex to avoid a pyyaml dependency. Returns None if the file
-    has no valid frontmatter block.
-    """
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    m = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
-    if not m:
-        return None
-    block = m.group(1)
-    result: dict[str, str] = {}
-    for line in block.splitlines():
-        # Match key: value (scalar only, skip lists/dicts)
-        kv = re.match(r'^(\w[\w-]*)\s*:\s*"?([^"\n]+?)"?\s*$', line)
-        if kv:
-            result[kv.group(1)] = kv.group(2).strip()
-    return result if result else None
-
-
-def _scan_agent_types() -> list[dict]:
-    """Walk the plugin cache and return all discovered agent type definitions.
-
-    Results are cached in memory for 60 seconds. Multiple versions of the
-    same plugin are deduplicated by keeping the newest mtime.
-    """
-    global _agent_types_cache, _agent_types_cache_ts
-
-    now = time.monotonic()
-    if _agent_types_cache and (now - _agent_types_cache_ts) < _AGENT_TYPES_TTL:
-        return _agent_types_cache
-
-    # Discover all agents directories at any depth under the plugin cache
-    agents: dict[str, dict] = {}  # keyed by qualified_name for dedup
-
-    if not PLUGINS_CACHE.is_dir():
-        _agent_types_cache = []
-        _agent_types_cache_ts = now
-        return []
-
-    for md_path in PLUGINS_CACHE.rglob("agents/*.md"):
-        fm = _parse_frontmatter(md_path)
-        if not fm or "name" not in fm:
-            continue
-
-        # Derive namespace from the directory structure.
-        # Pattern: cache/{org}/{plugin}/{version}/agents/*.md
-        # Namespace = plugin name (second component under cache).
-        rel = md_path.relative_to(PLUGINS_CACHE)
-        parts = rel.parts
-        # We need at least: org / plugin / version / agents / file.md
-        if len(parts) < 4:
-            continue
-        namespace = parts[1]  # plugin name
-
-        short_name = fm["name"]
-        qualified = f"{namespace}:{short_name}"
-        mtime = md_path.stat().st_mtime
-
-        # Deduplicate: keep the entry with the newest mtime
-        if qualified in agents and agents[qualified].get("_mtime", 0) >= mtime:
-            continue
-
-        summary = fm.get("description", "")
-        # Truncate long descriptions for the discovery listing
-        if len(summary) > 200:
-            summary = summary[:197] + "..."
-
-        agents[qualified] = {
-            "qualified_name": qualified,
-            "name": short_name,
-            "namespace": namespace,
-            "summary": summary,
-            "model": fm.get("model", ""),
-            "_mtime": mtime,
-        }
-
-    # Strip internal fields and sort
-    result = []
-    for entry in sorted(agents.values(), key=lambda e: e["qualified_name"]):
-        clean = {k: v for k, v in entry.items() if not k.startswith("_")}
-        result.append(clean)
-
-    _agent_types_cache = result
-    _agent_types_cache_ts = now
-    return result
-
-
-def _resolve_agent_type(name: str) -> dict | None:
-    """Resolve a short or qualified agent type name to its definition.
-
-    Resolution order:
-    1. Qualified name (contains ':'): exact match.
-    2. Exact short_name match with namespace priority.
-    3. None if no match found.
-    """
-    all_types = _scan_agent_types()
-
-    if ":" in name:
-        for agent in all_types:
-            if agent["qualified_name"] == name:
-                return agent
-        return None
-
-    # Short name: collect all matches
-    matches = [a for a in all_types if a["name"] == name]
-    if not matches:
-        return None
-    if len(matches) == 1:
-        return matches[0]
-
-    # Multiple matches: apply namespace priority
-    for ns in _NAMESPACE_PRIORITY:
-        for m in matches:
-            if m["namespace"] == ns:
-                return m
-    # Fallback: first alphabetically by namespace
-    return matches[0]
-
-
-def _tmux_check(*args: str) -> str:
-    """Run a tmux command and return stdout. Raises RuntimeError on failure."""
-    try:
-        result = subprocess.run(
-            ["tmux", *args],
-            capture_output=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode().strip()
-            raise RuntimeError(f"tmux {args[0]} failed: {stderr}")
-        return result.stdout.decode().strip()
-    except FileNotFoundError:
-        raise RuntimeError("tmux is not installed or not in PATH")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"tmux {args[0]} timed out")
-
-
-def _spawn_pane(
-    session: str,
-    window: str,
-    cwd: str,
-    agent_type: str,
-    qualified_name: str,
-    is_first: bool,
-    layout: str,
-) -> dict:
-    """Create a single tmux pane running a Claude Code agent.
-
-    Returns a dict with tmux_target, pane_id, and agent_type.
-    The ordering contract: pane title is set BEFORE send-keys so that
-    identity resolution works when the SessionStart hook fires.
-    """
-    repo = os.path.basename(cwd)
-
-    if is_first:
-        # Create new window (first pane comes free)
-        raw = _tmux_check(
-            "new-window", "-t", session, "-n", window,
-            "-c", cwd, "-P", "-F", "#{pane_id}",
-        )
-        pane_id = raw.strip()
-    else:
-        # Split from the window target
-        raw = _tmux_check(
-            "split-window", "-t", f"{session}:{window}",
-            "-c", cwd, "-P", "-F", "#{pane_id}",
-        )
-        pane_id = raw.strip()
-
-    # Resolve the full tmux_target (session:window.pane)
-    target_raw = _tmux_check(
-        "display-message", "-t", pane_id,
-        "-p", "#{session_id}:#{window_index}.#{pane_index}",
-    )
-    # display-message returns $N:W.P but we need the session name, not $id
-    # Use list-panes to get the canonical target
-    pane_info = _tmux_check(
-        "display-message", "-t", pane_id,
-        "-p", "#{session_name}:#{window_index}.#{pane_index}",
-    )
-    tmux_target = pane_info.strip()
-
-    # Set pane title BEFORE launching claude (identity resolution depends on this)
-    identity = f"{repo}:{qualified_name}:{tmux_target}"
-    _tmux_check("select-pane", "-t", pane_id, "-T", identity)
-
-    # Lock pane rename (window-level, only needed once per window)
-    if is_first:
-        _tmux_check(
-            "set-option", "-t", f"{session}:{window}",
-            "allow-rename", "off",
-        )
-
-    # Launch claude code with the agent type
-    cmd = f"claude --verbose --dangerously-skip-permissions --agent {qualified_name}"
-    _tmux_check("send-keys", "-t", pane_id, cmd, "Enter")
-
-    # Reflow layout after each split
-    _tmux_check("select-layout", "-t", f"{session}:{window}", layout)
-
-    return {
-        "agent_type": agent_type,
-        "qualified_name": qualified_name,
-        "tmux_target": tmux_target,
-        "pane_id": pane_id,
-    }
 
 
 # ── Warroom MCP tools ─────────────────────────────────────────────────────────
@@ -893,14 +473,18 @@ def warroom_spawn(
     """
     # Validate name
     if not name or not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,29}$", name):
-        return {"error": "Name must be 1-30 chars, alphanumeric and hyphens, starting with alphanumeric."}
+        return {
+            "error": "Name must be 1-30 chars, alphanumeric and hyphens, starting with alphanumeric."
+        }
 
     if not agents:
         return {"error": "At least one agent type is required."}
     if len(agents) > 8:
         return {"error": "Maximum 8 agents per warroom."}
 
-    valid_layouts = {"tiled", "even-horizontal", "even-vertical", "main-horizontal", "main-vertical"}
+    valid_layouts = {
+        "tiled", "even-horizontal", "even-vertical", "main-horizontal", "main-vertical"
+    }
     if layout not in valid_layouts:
         return {"error": f"Invalid layout. Choose from: {', '.join(sorted(valid_layouts))}"}
 
@@ -1035,13 +619,11 @@ def warroom_kill(
         for row in rows:
             wid = row["warroom_id"]
             target = f"{row['tmux_session']}:{row['tmux_window']}"
-            try:
+            with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
                 subprocess.run(
                     ["tmux", "kill-window", "-t", target],
                     capture_output=True, timeout=5,
                 )
-            except (subprocess.SubprocessError, FileNotFoundError):
-                pass  # Window may already be gone
 
             conn.execute("DELETE FROM warroom_members WHERE warroom_id = ?", (wid,))
             conn.execute("DELETE FROM warrooms WHERE warroom_id = ?", (wid,))
@@ -1100,7 +682,8 @@ def warroom_status(
                 # Backfill agent_id in warroom_members if newly registered
                 if registered and not m["agent_id"]:
                     conn.execute(
-                        "UPDATE warroom_members SET agent_id = ? WHERE warroom_id = ? AND agent_type = ?",
+                        "UPDATE warroom_members SET agent_id = ? "
+                        "WHERE warroom_id = ? AND agent_type = ?",
                         (agent_id, wid, m["agent_type"]),
                     )
 
@@ -1125,6 +708,170 @@ def warroom_status(
             })
 
     return result
+
+
+@mcp.tool()
+def warroom_add(
+    name: str,
+    agent: str,
+    cwd: str = "",
+) -> dict:
+    """Add an agent to an existing warroom.
+
+    Splits a new pane in the warroom's tmux window and launches Claude Code
+    with the specified agent type. Each agent type can appear at most once
+    per warroom.
+
+    Args:
+        name: Warroom identifier.
+        agent: Agent type name (qualified or short).
+        cwd: Working directory for the new pane. Defaults to the warroom's
+             original cwd.
+
+    Returns:
+        {warroom_id, added: {agent_type, qualified_name, tmux_target, pane_id}, member_count}
+    """
+    # Look up the warroom
+    with db() as conn:
+        wr = conn.execute(
+            "SELECT * FROM warrooms WHERE warroom_id = ? AND status = 'active'",
+            (name,),
+        ).fetchone()
+    if not wr:
+        return {"error": f"No active warroom '{name}'."}
+
+    # Resolve agent type
+    agent_def = _resolve_agent_type(agent)
+    if not agent_def:
+        all_types = _scan_agent_types()
+        q = agent.lower()
+        suggestions = [
+            a["qualified_name"] for a in all_types
+            if q in a["name"].lower() or q in a.get("summary", "").lower()
+        ][:5]
+        return {"error": "Unknown agent type", "suggestions": suggestions}
+
+    qn = agent_def["qualified_name"]
+
+    # Check for duplicate
+    with db() as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM warroom_members WHERE warroom_id = ? AND agent_type = ?",
+            (name, qn),
+        ).fetchone()
+    if existing:
+        return {"error": f"Agent type '{qn}' already in warroom '{name}'. Remove it first."}
+
+    use_cwd = cwd or wr["cwd"]
+
+    try:
+        pane_info = _spawn_pane(
+            session=wr["tmux_session"],
+            window=wr["tmux_window"],
+            cwd=use_cwd,
+            agent_type=agent_def["name"],
+            qualified_name=qn,
+            is_first=False,
+            layout="tiled",
+        )
+    except RuntimeError as e:
+        return {"error": f"Spawn failed: {e}"}
+
+    now = _now()
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO warroom_members
+               (warroom_id, agent_type, tmux_target, pane_id, agent_id, spawned_at)
+               VALUES (?, ?, ?, ?, NULL, ?)""",
+            (name, qn, pane_info["tmux_target"], pane_info["pane_id"], now),
+        )
+        count = conn.execute(
+            "SELECT COUNT(*) FROM warroom_members WHERE warroom_id = ?", (name,)
+        ).fetchone()[0]
+
+    return {
+        "warroom_id": name,
+        "added": pane_info,
+        "member_count": count,
+    }
+
+
+@mcp.tool()
+def warroom_remove(
+    name: str,
+    agent: str,
+) -> dict:
+    """Remove an agent from a warroom by killing its tmux pane.
+
+    If this is the last agent in the warroom, the warroom itself is
+    torn down.
+
+    Args:
+        name: Warroom identifier.
+        agent: Agent type to remove (qualified or short name).
+
+    Returns:
+        {warroom_id, removed: str, remaining_members: int, warroom_killed: bool}
+    """
+    agent_def = _resolve_agent_type(agent)
+    qn = agent_def["qualified_name"] if agent_def else agent
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        member = conn.execute(
+            "SELECT * FROM warroom_members WHERE warroom_id = ? AND agent_type = ?",
+            (name, qn),
+        ).fetchone()
+        if not member:
+            return {"error": f"No agent '{qn}' in warroom '{name}'."}
+
+        pane_id = member["pane_id"]
+
+        # Kill the tmux pane (may already be dead)
+        with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
+            subprocess.run(
+                ["tmux", "kill-pane", "-t", pane_id],
+                capture_output=True, timeout=5,
+            )
+
+        # Remove the member record
+        conn.execute(
+            "DELETE FROM warroom_members WHERE warroom_id = ? AND agent_type = ?",
+            (name, qn),
+        )
+
+        # Check remaining members
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM warroom_members WHERE warroom_id = ?", (name,)
+        ).fetchone()[0]
+
+        warroom_killed = False
+        if remaining == 0:
+            conn.execute(
+                "UPDATE warrooms SET status = 'killed' WHERE warroom_id = ?",
+                (name,),
+            )
+            warroom_killed = True
+        else:
+            # Reflow remaining panes
+            wr = conn.execute(
+                "SELECT tmux_session, tmux_window FROM warrooms WHERE warroom_id = ?",
+                (name,),
+            ).fetchone()
+            if wr:
+                with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
+                    subprocess.run(
+                        ["tmux", "select-layout", "-t",
+                         f"{wr['tmux_session']}:{wr['tmux_window']}", "tiled"],
+                        capture_output=True, timeout=5,
+                    )
+
+    return {
+        "warroom_id": name,
+        "removed": qn,
+        "remaining_members": remaining,
+        "warroom_killed": warroom_killed,
+    }
 
 
 @mcp.tool()
@@ -1177,7 +924,9 @@ def warroom_save_preset(
         {saved: name, path: str}
     """
     if not name or not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,49}$", name):
-        return {"error": "Name must be 1-50 chars, alphanumeric and hyphens, starting with alphanumeric."}
+        return {
+            "error": "Name must be 1-50 chars, alphanumeric and hyphens, starting with alphanumeric."
+        }
     if not agents:
         return {"error": "At least one agent type is required."}
 
