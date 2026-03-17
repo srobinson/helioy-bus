@@ -55,17 +55,20 @@ mcp = FastMCP("helioy-bus")
 def whoami() -> dict:
     """Return this agent's identity as registered on the bus.
 
+    Call this tool when the user types "whoami" or when you need to
+    discover your own agent_id, agent_type, or token usage.
+
     Resolves the calling process's agent_id via the PID file written at
     SessionStart, then looks up the full registration record.
 
     Returns:
-        {agent_id, agent_type, tmux_target, cwd, registered_at, token_usage}
+        {agent_id, agent_type, tmux_target, cwd, session_id, registered_at, token_usage}
         or {error} if not registered.
     """
     agent_id = _self_agent_id()
     with db() as conn:
         row = conn.execute(
-            "SELECT agent_id, agent_type, tmux_target, cwd, registered_at, token_usage"
+            "SELECT agent_id, agent_type, tmux_target, cwd, session_id, registered_at, token_usage"
             " FROM agents WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()

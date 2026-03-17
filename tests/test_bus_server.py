@@ -1357,12 +1357,12 @@ def test_token_usage_migration_from_older_schema(tmp_path, monkeypatch):
 
 
 def test_list_agents_includes_token_usage():
-    """list_agents returns parsed token_usage JSON."""
+    """list_agents returns parsed token_usage JSON (simplified format)."""
     from server._db import db
 
     import server.bus_server as bm
 
-    token_data = '{"total_input": 50000, "total_output": 3000, "limit": 200000, "percent": 25.0}'
+    token_data = '{"tokens": 81751, "updated": "2026-03-17T08:17:51Z"}'
     bm.register_agent(pwd="/tmp/tracked", agent_id="tracked")
     with db() as conn:
         conn.execute(
@@ -1373,8 +1373,8 @@ def test_list_agents_includes_token_usage():
     agents = bm.list_agents()
     agent = next(a for a in agents if a["agent_id"] == "tracked")
     assert isinstance(agent["token_usage"], dict)
-    assert agent["token_usage"]["total_input"] == 50000
-    assert agent["token_usage"]["percent"] == 25.0
+    assert agent["token_usage"]["tokens"] == 81751
+    assert agent["token_usage"]["updated"] == "2026-03-17T08:17:51Z"
 
 
 def test_list_agents_empty_token_usage():
@@ -1392,13 +1392,13 @@ def test_list_agents_empty_token_usage():
 
 
 def test_warroom_status_includes_token_usage(monkeypatch):
-    """warroom_status includes token_usage in member dicts."""
+    """warroom_status includes token_usage in member dicts (simplified format)."""
     from server._db import _now, db
 
     import server.bus_server as bm
 
     now = _now()
-    token_data = '{"total_input": 85000, "total_output": 5000, "limit": 200000, "percent": 42.5}'
+    token_data = '{"tokens": 85000, "updated": "2026-03-17T08:17:51Z"}'
 
     with db() as conn:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -1425,20 +1425,20 @@ def test_warroom_status_includes_token_usage(monkeypatch):
     statuses = bm.warroom_status(name="token-wr")
     member = statuses[0]["members"][0]
     assert isinstance(member["token_usage"], dict)
-    assert member["token_usage"]["total_input"] == 85000
-    assert member["token_usage"]["percent"] == 42.5
+    assert member["token_usage"]["tokens"] == 85000
+    assert member["token_usage"]["updated"] == "2026-03-17T08:17:51Z"
 
 
 # ── Token tracking: whoami includes token_usage ──────────────────────────────
 
 
 def test_whoami_includes_token_usage(monkeypatch):
-    """whoami returns parsed token_usage."""
+    """whoami returns parsed token_usage (simplified format)."""
     from server._db import db
 
     import server.bus_server as bm
 
-    token_data = '{"total_input": 20000, "total_output": 1500, "limit": 200000, "percent": 10.0}'
+    token_data = '{"tokens": 20000, "updated": "2026-03-17T08:17:51Z"}'
     bm.register_agent(pwd="/tmp/myproj", agent_id="myproj")
     with db() as conn:
         conn.execute(
@@ -1449,4 +1449,4 @@ def test_whoami_includes_token_usage(monkeypatch):
     monkeypatch.setattr(bm, "_self_agent_id", lambda: "myproj")
     result = bm.whoami()
     assert isinstance(result["token_usage"], dict)
-    assert result["token_usage"]["total_input"] == 20000
+    assert result["token_usage"]["tokens"] == 20000

@@ -37,8 +37,8 @@ else
     PWD_EFFECTIVE="${PWD:-}"
 fi
 
-# Session ID: set by claude-wrapper, empty if Claude was started directly
-SESSION_ID="${HELIOY_SESSION_ID:-}"
+# Session ID from env vars only. No guessing from JSONL files.
+SESSION_ID="${HELIOY_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
 
 # Write PID → agent_id mapping so hooks and server tools can self-identify
 PIDS_DIR="$BUS_DIR/pids"
