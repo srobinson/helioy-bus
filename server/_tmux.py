@@ -163,8 +163,10 @@ def _spawn_pane(
 
     if is_first:
         # Create new window (first pane comes free)
+        # Use -a to append after current window, avoiding index collisions.
+        # Trailing colon on session ensures tmux targets the session, not a window.
         raw = _tmux_check(
-            "new-window", "-t", session, "-n", window,
+            "new-window", "-a", "-t", f"{session}:", "-n", window,
             "-c", cwd, "-P", "-F", "#{pane_id}",
         )
         pane_id = raw.strip()
@@ -201,7 +203,7 @@ def _spawn_pane(
         )
 
     # Launch claude code with the agent type
-    cmd = f"claude --verbose --dangerously-skip-permissions --agent {qualified_name}"
+    cmd = f"claude --agent {qualified_name}"
     _tmux_check("send-keys", "-t", pane_id, cmd, "Enter")
 
     # Reflow layout after each split

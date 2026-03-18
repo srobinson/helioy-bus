@@ -37,8 +37,10 @@ else
     PWD_EFFECTIVE="${PWD:-}"
 fi
 
-# Session ID from env vars only. No guessing from JSONL files.
-SESSION_ID="${HELIOY_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+# Session ID: prefer stdin JSON (always available in hooks), fall back to env.
+STDIN_JSON=$(cat)
+SESSION_ID=$(echo "$STDIN_JSON" | jq -r '.session_id // empty' 2>/dev/null || true)
+SESSION_ID="${SESSION_ID:-${HELIOY_SESSION_ID:-${CLAUDE_SESSION_ID:-}}}"
 
 # Write PID → agent_id mapping so hooks and server tools can self-identify
 PIDS_DIR="$BUS_DIR/pids"
