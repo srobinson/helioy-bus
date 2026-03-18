@@ -27,7 +27,7 @@ if [[ -z "${TMUX:-}" ]]; then
 fi
 
 BASE="${HELIOY_BASE:-$HOME/Dev/LLM/DEV/helioy}"
-CLAUDE="claude --verbose --dangerously-skip-permissions"
+CLAUDE="claude --verbose --dangerously-skip-permissions --model opus --effort max"
 
 # Helioy repos for repo-mode. Format: "name" or "name:path"
 REPOS=(
