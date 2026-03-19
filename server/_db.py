@@ -108,3 +108,12 @@ def db():
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _initdb_cli() -> None:
+    """CLI entry point: open db() to bootstrap schema, then exit.
+
+    Used by shell hooks to initialize the database without duplicating DDL.
+    """
+    with db():
+        pass

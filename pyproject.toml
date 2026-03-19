@@ -10,6 +10,7 @@ dependencies = [
 
 [project.scripts]
 helioy-bus = "bus_server:mcp"
+helioy-bus-initdb = "server._db:_initdb_cli"
 
 [tool.uv]
 dev-dependencies = [
