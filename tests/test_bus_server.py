@@ -708,3 +708,20 @@ def test_whoami_includes_token_usage(monkeypatch):
     result = bm.whoami()
     assert isinstance(result["token_usage"], dict)
     assert result["token_usage"]["tokens"] == 20000
+
+
+# ── DB hygiene: init-once ─────────────────────────────────────────────────────
+
+
+def test_init_db_idempotent():
+    """Calling db() multiple times does not error; schema is bootstrapped once."""
+    from server._db import db
+
+    # First call creates the schema
+    with db() as conn:
+        conn.execute("SELECT 1 FROM agents")
+
+    # Second call must work without re-running _init_db on the fresh temp db
+    with db() as conn:
+        conn.execute("SELECT 1 FROM agents")
+        conn.execute("SELECT 1 FROM warrooms")

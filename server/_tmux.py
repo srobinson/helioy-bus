@@ -56,7 +56,7 @@ def _record_nudge(agent_id: str) -> None:
         # Prune old entries (keep last 24h)
         conn.execute(
             "DELETE FROM nudge_log WHERE nudged_at < ?",
-            (datetime.now(UTC).replace(hour=0, minute=0, second=0).isoformat(),),
+            ((datetime.now(UTC) - timedelta(hours=24)).isoformat(),),
         )
 
 

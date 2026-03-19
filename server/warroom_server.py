@@ -20,6 +20,7 @@ import contextlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 
 from mcp.server.fastmcp import FastMCP
@@ -37,6 +38,44 @@ from server._warroom import (
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 mcp = FastMCP("helioy-warroom")
+
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+
+def _kill_warrooms(
+    conn: sqlite3.Connection, name: str, kill_all: bool
+) -> list[str]:
+    """Kill warrooms and remove DB records using an existing connection.
+
+    Kills the tmux window for each matching warroom (if still alive) and
+    deletes the warroom and its members from the database.
+
+    Returns the list of killed warroom IDs.
+    """
+    if kill_all:
+        rows = conn.execute(
+            "SELECT warroom_id, tmux_session, tmux_window FROM warrooms WHERE status = 'active'"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT warroom_id, tmux_session, tmux_window FROM warrooms WHERE warroom_id = ?",
+            (name,),
+        ).fetchall()
+
+    killed = []
+    for row in rows:
+        wid = row["warroom_id"]
+        target = f"{row['tmux_session']}:{row['tmux_window']}"
+        with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
+            subprocess.run(
+                ["tmux", "kill-window", "-t", target],
+                capture_output=True, timeout=5,
+            )
+        conn.execute("DELETE FROM warroom_members WHERE warroom_id = ?", (wid,))
+        conn.execute("DELETE FROM warrooms WHERE warroom_id = ?", (wid,))
+        killed.append(wid)
+    return killed
 
 # ── Warroom MCP tools ─────────────────────────────────────────────────────────
 
@@ -164,9 +203,6 @@ def warroom_spawn(
     if errors:
         return {"error": "Unknown agent types", "details": errors}
 
-    # Idempotent: kill existing warroom with same name
-    warroom_kill(name=name)
-
     # Spawn panes
     now = _now()
     members = []
@@ -189,9 +225,9 @@ def warroom_spawn(
                 "error": str(e),
             })
 
-    # Record in SQLite
+    # Atomically replace existing record: kill old warroom then insert new one
     with db() as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
+        _kill_warrooms(conn, name, kill_all=False)
         conn.execute(
             """INSERT OR REPLACE INTO warrooms
                (warroom_id, tmux_session, tmux_window, cwd, created_at, status)
@@ -239,35 +275,10 @@ def warroom_kill(
     if not name and not kill_all:
         return {"error": "Provide a warroom name or set kill_all=True."}
 
-    killed = []
-    errors = []
-
     with db() as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
-        if kill_all:
-            rows = conn.execute(
-                "SELECT warroom_id, tmux_session, tmux_window FROM warrooms WHERE status = 'active'"
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT warroom_id, tmux_session, tmux_window FROM warrooms WHERE warroom_id = ?",
-                (name,),
-            ).fetchall()
+        killed = _kill_warrooms(conn, name, kill_all)
 
-        for row in rows:
-            wid = row["warroom_id"]
-            target = f"{row['tmux_session']}:{row['tmux_window']}"
-            with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
-                subprocess.run(
-                    ["tmux", "kill-window", "-t", target],
-                    capture_output=True, timeout=5,
-                )
-
-            conn.execute("DELETE FROM warroom_members WHERE warroom_id = ?", (wid,))
-            conn.execute("DELETE FROM warrooms WHERE warroom_id = ?", (wid,))
-            killed.append(wid)
-
-    return {"killed": killed, "errors": errors}
+    return {"killed": killed, "errors": []}
 
 
 @mcp.tool()
@@ -375,16 +386,7 @@ def warroom_add(
     Returns:
         {warroom_id, added: {agent_type, qualified_name, tmux_target, pane_id}, member_count}
     """
-    # Look up the warroom
-    with db() as conn:
-        wr = conn.execute(
-            "SELECT * FROM warrooms WHERE warroom_id = ? AND status = 'active'",
-            (name,),
-        ).fetchone()
-    if not wr:
-        return {"error": f"No active warroom '{name}'."}
-
-    # Resolve agent type
+    # Resolve agent type (no db needed)
     agent_def = _resolve_agent_type(agent)
     if not agent_def:
         all_types = _scan_agent_types()
@@ -397,32 +399,39 @@ def warroom_add(
 
     qn = agent_def["qualified_name"]
 
-    # Check for duplicate
+    # Look up warroom and check for duplicate in one connection
     with db() as conn:
+        wr = conn.execute(
+            "SELECT * FROM warrooms WHERE warroom_id = ? AND status = 'active'",
+            (name,),
+        ).fetchone()
+        if not wr:
+            return {"error": f"No active warroom '{name}'."}
+
         existing = conn.execute(
             "SELECT 1 FROM warroom_members WHERE warroom_id = ? AND agent_type = ?",
             (name, qn),
         ).fetchone()
-    if existing:
-        return {"error": f"Agent type '{qn}' already in warroom '{name}'. Remove it first."}
+        if existing:
+            return {"error": f"Agent type '{qn}' already in warroom '{name}'. Remove it first."}
 
-    use_cwd = cwd or wr["cwd"]
+        use_cwd = cwd or wr["cwd"]
 
-    try:
-        pane_info = _spawn_pane(
-            session=wr["tmux_session"],
-            window=wr["tmux_window"],
-            cwd=use_cwd,
-            agent_type=agent_def["name"],
-            qualified_name=qn,
-            is_first=False,
-            layout="tiled",
-        )
-    except RuntimeError as e:
-        return {"error": f"Spawn failed: {e}"}
+        # Spawn pane outside the hot path but inside the connection lifetime
+        try:
+            pane_info = _spawn_pane(
+                session=wr["tmux_session"],
+                window=wr["tmux_window"],
+                cwd=use_cwd,
+                agent_type=agent_def["name"],
+                qualified_name=qn,
+                is_first=False,
+                layout="tiled",
+            )
+        except RuntimeError as e:
+            return {"error": f"Spawn failed: {e}"}
 
-    now = _now()
-    with db() as conn:
+        now = _now()
         conn.execute(
             """INSERT INTO warroom_members
                (warroom_id, agent_type, tmux_target, pane_id, agent_id, spawned_at)
@@ -461,7 +470,6 @@ def warroom_remove(
     qn = agent_def["qualified_name"] if agent_def else agent
 
     with db() as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
         member = conn.execute(
             "SELECT * FROM warroom_members WHERE warroom_id = ? AND agent_type = ?",
             (name, qn),
