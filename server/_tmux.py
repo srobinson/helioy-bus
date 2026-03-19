@@ -206,9 +206,11 @@ def _spawn_pane(
             "allow-rename", "off",
         )
 
-    # Launch claude code, with or without a specific agent type
+    # Launch claude code, with or without a specific agent type.
+    # Both paths use --dangerously-skip-permissions so warroom agents run
+    # autonomously without interactive permission prompts.
     if qualified_name is not None:
-        cmd = f"claude --agent {qualified_name}"
+        cmd = f"claude --dangerously-skip-permissions --agent {qualified_name}"
     else:
         cmd = "claude --dangerously-skip-permissions"
     _tmux_check("send-keys", "-t", pane_id, cmd, "Enter")

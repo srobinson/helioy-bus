@@ -159,6 +159,10 @@ def warroom_spawn_repos(
     if not repos:
         return {"error": f"No git repos found under {base}"}
 
+    # Kill any existing warroom with this window name BEFORE spawning.
+    with db() as conn:
+        _kill_warrooms(conn, window, kill_all=False)
+
     now = _now()
     members = []
     spawn_errors = []
@@ -178,7 +182,6 @@ def warroom_spawn_repos(
             spawn_errors.append({"repo": repo_path.name, "error": str(e)})
 
     with db() as conn:
-        _kill_warrooms(conn, window, kill_all=False)
         conn.execute(
             """INSERT OR REPLACE INTO warrooms
                (warroom_id, tmux_session, tmux_window, cwd, created_at, status)
@@ -285,7 +288,13 @@ def warroom_spawn(
     if errors:
         return {"error": "Unknown agent types", "details": errors}
 
-    # Spawn panes
+    # Kill any existing warroom with this name BEFORE spawning new panes.
+    # This ensures idempotency: tmux rejects duplicate window names, so the
+    # kill must happen first to guarantee the new-window call succeeds.
+    with db() as conn:
+        _kill_warrooms(conn, name, kill_all=False)
+
+    # Spawn panes (existing window is guaranteed gone)
     now = _now()
     members = []
     spawn_errors = []
@@ -307,9 +316,7 @@ def warroom_spawn(
                 "error": str(e),
             })
 
-    # Atomically replace existing record: kill old warroom then insert new one
     with db() as conn:
-        _kill_warrooms(conn, name, kill_all=False)
         conn.execute(
             """INSERT OR REPLACE INTO warrooms
                (warroom_id, tmux_session, tmux_window, cwd, created_at, status)
