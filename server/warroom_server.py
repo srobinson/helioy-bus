@@ -28,9 +28,6 @@ from mcp.server.fastmcp import FastMCP
 from server._db import PRESETS_DIR, _now, db
 from server._tmux import _spawn_pane, _tmux_check, _tmux_pane_alive
 from server._warroom import (
-    _agent_types_cache,  # noqa: F401 (re-exported for tests)
-    _agent_types_cache_ts,  # noqa: F401
-    _parse_frontmatter,  # noqa: F401
     _resolve_agent_type,
     _scan_agent_types,
 )

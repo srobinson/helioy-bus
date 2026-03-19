@@ -24,8 +24,6 @@ from mcp.server.fastmcp import FastMCP
 from server._db import INBOX_DIR, _dbg, _now, db
 from server._identity import _self_agent_id
 from server._tmux import (
-    NUDGE_THROTTLE_SECONDS,  # noqa: F401 (re-exported for tests)
-    _inbox_has_unread,  # noqa: F401
     _nudge_allowed,
     _record_nudge,
     _tmux_nudge,

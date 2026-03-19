@@ -31,13 +31,5 @@ ci: check test
 run:
     uv run python {{ server_dir }}/bus_server.py
 
-# Show registered agents (quick CLI check)
-agents:
-    uv run python scripts/agents.py
-
-# Show all inboxes and message counts
-inboxes:
-    uv run python scripts/inboxes.py
-
 # Preflight: build + check + test
 preflight: build check test
