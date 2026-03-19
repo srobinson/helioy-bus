@@ -64,7 +64,10 @@ def _kill_warrooms(
     killed = []
     for row in rows:
         wid = row["warroom_id"]
-        target = f"{row['tmux_session']}:{row['tmux_window']}"
+        # Use '=' prefix for exact window-name match (tmux 2.x+).
+        # Without '=', tmux uses prefix matching: "eng" would match
+        # "engineering" and kill an unrelated window.
+        target = f"{row['tmux_session']}:={row['tmux_window']}"
         with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
             subprocess.run(
                 ["tmux", "kill-window", "-t", target],
