@@ -48,12 +48,27 @@ mkdir -p "$PIDS_DIR"
 echo "$AGENT_ID" > "$PIDS_DIR/$PPID"
 
 # Derive the helioy-bus repo root so server._db is importable.
-# Works whether the hook is run from its absolute path (production) or
-# via HELIOY_BUS_PYTHON_PATH override (testing / alternate installs).
-HELIOY_BUS_ROOT="${HELIOY_BUS_PYTHON_PATH:-$(cd "$(dirname "$0")/../.." && pwd)}"
+# Priority order:
+#   1. HELIOY_BUS_PYTHON_PATH — explicit override, always wins
+#   2. CLAUDE_PLUGIN_ROOT     — set by Claude Code once that env var lands (TODO)
+#   3. BASH_SOURCE resolution — follows symlinks to the real script location,
+#                               so this works even when the hook is symlinked
+#                               from ~/.claude/plugins/ back to the repo
+if [[ -n "${HELIOY_BUS_PYTHON_PATH:-}" ]]; then
+    HELIOY_BUS_ROOT="$HELIOY_BUS_PYTHON_PATH"
+elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+    HELIOY_BUS_ROOT="$CLAUDE_PLUGIN_ROOT"
+else
+    _script="${BASH_SOURCE[0]}"
+    while [[ -L "$_script" ]]; do
+        _script="$(readlink "$_script")"
+    done
+    HELIOY_BUS_ROOT="$(cd "$(dirname "$_script")/../.." && pwd)"
+    unset _script
+fi
 
 # Write directly to SQLite via _db.py (single source of truth for schema).
-# All values are passed through environment variables — never interpolated
+# All values passed through environment variables — never interpolated
 # into Python source — to prevent injection when paths contain special chars.
 _HELIOY_BUS_DIR="$BUS_DIR" \
 _HELIOY_INBOX_BASE="$INBOX_BASE" \
