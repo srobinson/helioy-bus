@@ -389,8 +389,17 @@ def warroom_status(
         result = []
         for wr in warrooms:
             wid = wr["warroom_id"]
+            # Single JOIN replaces N+1 per-member agent lookups.
             members_rows = conn.execute(
-                "SELECT * FROM warroom_members WHERE warroom_id = ?", (wid,)
+                """
+                SELECT wm.*,
+                       a.agent_id  AS registered_agent_id,
+                       a.token_usage AS agent_token_usage
+                FROM warroom_members wm
+                LEFT JOIN agents a ON a.tmux_target = wm.tmux_target
+                WHERE wm.warroom_id = ?
+                """,
+                (wid,),
             ).fetchall()
 
             members = []
@@ -398,15 +407,9 @@ def warroom_status(
                 tmux_target = m["tmux_target"]
                 pane_alive = _tmux_pane_alive(tmux_target)
 
-                # Cross-reference with agents table to find registration
-                agent_row = conn.execute(
-                    "SELECT agent_id, token_usage FROM agents WHERE tmux_target = ?",
-                    (tmux_target,),
-                ).fetchone()
-
-                registered = agent_row is not None
-                agent_id = agent_row["agent_id"] if agent_row else m["agent_id"]
-                token_usage_raw = agent_row["token_usage"] if agent_row else None
+                registered = m["registered_agent_id"] is not None
+                agent_id = m["registered_agent_id"] if registered else m["agent_id"]
+                token_usage_raw = m["agent_token_usage"] if registered else None
                 token_usage: dict | str | None = token_usage_raw
                 if token_usage_raw:
                     with contextlib.suppress(json.JSONDecodeError, TypeError):
