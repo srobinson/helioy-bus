@@ -32,12 +32,22 @@ TOKENS=$(printf '%s\n' "$CAPTURED" | grep -oE '[0-9]+ tokens' | tail -1 | grep -
 
 [[ -z "$TOKENS" ]] && exit 0
 
-# Write to registry.db with concurrency-safe timeout
-sqlite3 -cmd ".timeout 3000" "$DB_PATH" "
-    UPDATE agents
-    SET token_usage = json_object('tokens', $TOKENS, 'updated', datetime('now')),
-        last_seen = datetime('now')
-    WHERE agent_id = '${AGENT_ID//\'/\'\'}';
+# Write to registry.db via parameterized Python (avoids SQL injection via AGENT_ID)
+_HELIOY_DB_PATH="$DB_PATH" \
+_HELIOY_AGENT_ID="$AGENT_ID" \
+_HELIOY_TOKENS="$TOKENS" \
+python3 -c "
+import sqlite3, os, json
+from datetime import datetime, timezone
+now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+usage = json.dumps({'tokens': int(os.environ['_HELIOY_TOKENS']), 'updated': now})
+conn = sqlite3.connect(os.environ['_HELIOY_DB_PATH'], timeout=3)
+conn.execute(
+    'UPDATE agents SET token_usage = ?, last_seen = ? WHERE agent_id = ?',
+    (usage, now, os.environ['_HELIOY_AGENT_ID']),
+)
+conn.commit()
+conn.close()
 " 2>/dev/null || true
 
 exit 0

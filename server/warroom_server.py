@@ -245,10 +245,7 @@ def warroom_spawn(
     result = {
         "warroom_id": name,
         "tmux_window": name,
-        "members": [
-            {k: v for k, v in m.items() if k != "pane_id"} | {"pane_id": m["pane_id"]}
-            for m in members
-        ],
+        "members": members,
         "spawned_at": now,
     }
     if spawn_errors:
