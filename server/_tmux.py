@@ -149,15 +149,18 @@ def _spawn_pane(
     window: str,
     cwd: str,
     agent_type: str,
-    qualified_name: str,
+    qualified_name: str | None,
     is_first: bool,
     layout: str,
 ) -> dict:
     """Create a single tmux pane running a Claude Code agent.
 
-    Returns a dict with tmux_target, pane_id, and agent_type.
+    Returns a dict with tmux_target, pane_id, agent_type, and qualified_name.
     The ordering contract: pane title is set BEFORE send-keys so that
     identity resolution works when the SessionStart hook fires.
+
+    When qualified_name is None, spawns a general Claude session without
+    the --agent flag (repo-mode).
     """
     repo = os.path.basename(cwd)
 
@@ -192,7 +195,8 @@ def _spawn_pane(
     tmux_target = pane_info.strip()
 
     # Set pane title BEFORE launching claude (identity resolution depends on this)
-    identity = f"{repo}:{qualified_name}:{tmux_target}"
+    display_name = qualified_name if qualified_name is not None else agent_type
+    identity = f"{repo}:{display_name}:{tmux_target}"
     _tmux_check("select-pane", "-t", pane_id, "-T", identity)
 
     # Lock pane rename (window-level, only needed once per window)
@@ -202,8 +206,11 @@ def _spawn_pane(
             "allow-rename", "off",
         )
 
-    # Launch claude code with the agent type
-    cmd = f"claude --agent {qualified_name}"
+    # Launch claude code, with or without a specific agent type
+    if qualified_name is not None:
+        cmd = f"claude --agent {qualified_name}"
+    else:
+        cmd = "claude --dangerously-skip-permissions"
     _tmux_check("send-keys", "-t", pane_id, cmd, "Enter")
 
     # Reflow layout after each split

@@ -22,6 +22,7 @@ import os
 import re
 import sqlite3
 import subprocess
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -118,6 +119,90 @@ def warroom_discover(
         "total": total,
         "namespaces": all_namespaces,
     }
+
+
+@mcp.tool()
+def warroom_spawn_repos(
+    window: str = "warroom",
+    layout: str = "tiled",
+) -> dict:
+    """Spawn one general Claude agent per helioy repo in a single tmux window.
+
+    Repo-mode: each pane runs in the repo's directory without a specific agent
+    type (equivalent to running `claude --dangerously-skip-permissions`).
+
+    Repos are discovered by scanning HELIOY_BASE for subdirectories that
+    contain a .git folder. Uses HELIOY_BASE env var (default:
+    ~/Dev/LLM/DEV/helioy). Idempotent: kills any existing warroom with the
+    same window name first.
+
+    Args:
+        window: tmux window name. Default "warroom".
+        layout: tmux layout algorithm. Default "tiled".
+
+    Returns:
+        {warroom_id, tmux_window, members: [...], spawned_at}
+    """
+    if not os.environ.get("TMUX"):
+        return {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
+
+    try:
+        session = _tmux_check("display-message", "-p", "#{session_name}")
+    except RuntimeError as e:
+        return {"error": f"Cannot determine tmux session: {e}"}
+
+    base = Path(os.environ.get("HELIOY_BASE", Path.home() / "Dev/LLM/DEV/helioy"))
+    if not base.is_dir():
+        return {"error": f"HELIOY_BASE not found: {base}"}
+
+    repos = sorted(p for p in base.iterdir() if p.is_dir() and (p / ".git").exists())
+    if not repos:
+        return {"error": f"No git repos found under {base}"}
+
+    now = _now()
+    members = []
+    spawn_errors = []
+    for i, repo_path in enumerate(repos):
+        try:
+            pane_info = _spawn_pane(
+                session=session,
+                window=window,
+                cwd=str(repo_path),
+                agent_type="general",
+                qualified_name=None,
+                is_first=(i == 0),
+                layout=layout,
+            )
+            members.append(pane_info)
+        except RuntimeError as e:
+            spawn_errors.append({"repo": repo_path.name, "error": str(e)})
+
+    with db() as conn:
+        _kill_warrooms(conn, window, kill_all=False)
+        conn.execute(
+            """INSERT OR REPLACE INTO warrooms
+               (warroom_id, tmux_session, tmux_window, cwd, created_at, status)
+               VALUES (?, ?, ?, ?, ?, 'active')""",
+            (window, session, window, str(base), now),
+        )
+        for m in members:
+            agent_label = m["qualified_name"] or "general"
+            conn.execute(
+                """INSERT OR REPLACE INTO warroom_members
+                   (warroom_id, agent_type, tmux_target, pane_id, agent_id, spawned_at)
+                   VALUES (?, ?, ?, ?, NULL, ?)""",
+                (window, agent_label, m["tmux_target"], m["pane_id"], now),
+            )
+
+    result: dict = {
+        "warroom_id": window,
+        "tmux_window": window,
+        "members": members,
+        "spawned_at": now,
+    }
+    if spawn_errors:
+        result["errors"] = spawn_errors
+    return result
 
 
 @mcp.tool()
