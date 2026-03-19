@@ -8,6 +8,16 @@
 #   warroom.sh status                       # list all warroom agents
 #
 # Delegates to the helioy-warroom-cli Python entry point.
-# Install with: uv sync (in the helioy-bus project directory).
+# Resolves the project root via symlink-safe BASH_SOURCE so this works
+# when the script is symlinked from the plugin cache.
 
-exec helioy-warroom-cli "$@"
+_script="${BASH_SOURCE[0]}"
+while [[ -L "$_script" ]]; do
+    _dir="$(cd "$(dirname "$_script")" && pwd)"
+    _target="$(readlink "$_script")"
+    [[ "$_target" != /* ]] && _target="$_dir/$_target"
+    _script="$_target"
+done
+_PROJECT_ROOT="$(cd "$(dirname "$_script")/../.." && pwd)"
+
+exec "$_PROJECT_ROOT/.venv/bin/helioy-warroom-cli" "$@"
