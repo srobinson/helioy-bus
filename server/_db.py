@@ -23,17 +23,20 @@ LOG_FILE = Path("/tmp/helioy-bus-debug.log")
 
 
 def _dbg(msg: str) -> None:
-    from datetime import datetime as _dt
-
-    ts = _dt.now().isoformat(timespec="seconds")
+    ts = datetime.now(UTC).isoformat(timespec="seconds")
     with LOG_FILE.open("a") as f:
         f.write(f"[{ts}] {msg}\n")
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
+_db_initialized = False
+
 
 def _init_db(conn: sqlite3.Connection) -> None:
+    global _db_initialized
+    if _db_initialized:
+        return
     conn.executescript("""
         PRAGMA journal_mode=WAL;
         PRAGMA synchronous=NORMAL;
@@ -83,6 +86,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
     # Migration: add token_usage column for token tracking
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE agents ADD COLUMN token_usage TEXT NOT NULL DEFAULT '{}'")
+    _db_initialized = True
 
 
 @contextmanager
@@ -90,6 +94,7 @@ def db():
     BUS_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(REGISTRY_DB), timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     _init_db(conn)
     try:
         yield conn
@@ -103,3 +108,12 @@ def db():
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _initdb_cli() -> None:
+    """CLI entry point: open db() to bootstrap schema, then exit.
+
+    Used by shell hooks to initialize the database without duplicating DDL.
+    """
+    with db():
+        pass

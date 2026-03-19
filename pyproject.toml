@@ -9,7 +9,10 @@ dependencies = [
 ]
 
 [project.scripts]
-helioy-bus = "bus_server:mcp"
+helioy-bus = "server.bus_server:mcp"
+helioy-warroom = "server.warroom_server:mcp"
+helioy-warroom-cli = "server.warroom_cli:main"
+helioy-bus-initdb = "server._db:_initdb_cli"
 
 [tool.uv]
 dev-dependencies = [

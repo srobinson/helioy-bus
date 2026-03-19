@@ -18,14 +18,13 @@ import json
 import os
 import tempfile
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from mcp.server.fastmcp import FastMCP
 
 from server._db import INBOX_DIR, _dbg, _now, db
 from server._identity import _self_agent_id
 from server._tmux import (
-    NUDGE_THROTTLE_SECONDS,  # noqa: F401 (re-exported for tests)
-    _inbox_has_unread,  # noqa: F401
     _nudge_allowed,
     _record_nudge,
     _tmux_nudge,
@@ -147,39 +146,39 @@ def list_agents(tmux_filter: str = "") -> list[dict]:
     exists are removed from the registry before returning.
     """
     with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM agents ORDER BY registered_at ASC"
+        # Lazy liveness pruning: check agents that have a tmux_target.
+        alive_rows = conn.execute(
+            "SELECT agent_id, tmux_target FROM agents WHERE tmux_target != ''"
         ).fetchall()
-        agents = [dict(row) for row in rows]
-
-        # Lazy liveness check: remove agents with dead tmux panes
-        dead_ids = []
-        for agent in agents:
-            target = agent.get("tmux_target", "")
-            if target and not _tmux_pane_alive(target):
-                dead_ids.append(agent["agent_id"])
-
+        dead_ids: set[str] = {
+            r["agent_id"] for r in alive_rows if not _tmux_pane_alive(r["tmux_target"])
+        }
         if dead_ids:
             placeholders = ",".join("?" * len(dead_ids))
             conn.execute(
-                f"DELETE FROM agents WHERE agent_id IN ({placeholders})", dead_ids
+                f"DELETE FROM agents WHERE agent_id IN ({placeholders})",
+                list(dead_ids),
             )
 
-    # Build prefix matcher from tmux_filter.
-    # "mysession" matches "mysession:0.1", "mysession:1.0", etc.
-    # "mysession:2" matches "mysession:2.0", "mysession:2.1", etc.
-    if tmux_filter:
-        # session:window -> "session:window." prefix; session -> "session:" prefix
-        prefix = tmux_filter + ("." if ":" in tmux_filter else ":")
+        # Fetch result set with optional SQL filter push-down.
+        # "mysession"  -> LIKE 'mysession:%'
+        # "mysession:2" -> LIKE 'mysession:2.%'
+        if tmux_filter:
+            sql_prefix = tmux_filter + ("." if ":" in tmux_filter else ":") + "%"
+            rows = conn.execute(
+                "SELECT * FROM agents WHERE tmux_target LIKE ? ORDER BY registered_at ASC",
+                (sql_prefix,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM agents ORDER BY registered_at ASC"
+            ).fetchall()
 
     result = []
-    for a in agents:
+    for row in rows:
+        a = dict(row)
         if a["agent_id"] in dead_ids:
             continue
-        if tmux_filter:
-            target = a.get("tmux_target", "")
-            if not target.startswith(prefix):
-                continue
         if a.get("profile"):
             with contextlib.suppress(json.JSONDecodeError, TypeError):
                 a["profile"] = json.loads(a["profile"])
@@ -393,6 +392,15 @@ def get_messages(agent_id: str = "", topic: str = "") -> list[dict]:
             messages.append(data)
             path.rename(archive / path.name)
         except (json.JSONDecodeError, OSError):
+            continue
+
+    # Lazy archive TTL: remove archived files older than 7 days.
+    cutoff = datetime.now(UTC) - timedelta(days=7)
+    for archived in archive.glob("*.json"):
+        try:
+            if datetime.fromtimestamp(archived.stat().st_mtime, UTC) < cutoff:
+                archived.unlink()
+        except OSError:
             continue
 
     _dbg(f"get_messages: returning {len(messages)} message(s)")

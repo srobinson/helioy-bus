@@ -631,6 +631,124 @@ def test_warroom_remove_nonexistent_agent(fake_plugins):
     assert "error" in result
 
 
+# ── Warroom: spawn idempotency ───────────────────────────────────────────────
+
+
+def test_warroom_spawn_idempotent_replaces_existing(fake_plugins, monkeypatch):
+    """Re-spawning with the same name replaces the existing warroom DB record."""
+    import server.warroom_server as wm
+    from server._db import db
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+
+    pane_counter = [0]
+
+    def mock_spawn_pane(**kw):
+        idx = pane_counter[0]
+        pane_counter[0] += 1
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": f"main:1.{idx}",
+            "pane_id": f"%{idx}",
+        }
+
+    monkeypatch.setattr(wm, "_tmux_check", lambda *a: "main")
+    monkeypatch.setattr(wm, "_spawn_pane", mock_spawn_pane)
+
+    # First spawn
+    r1 = wm.warroom_spawn(name="idem-test", agents=["backend-engineer"], cwd="/tmp")
+    assert r1["warroom_id"] == "idem-test"
+    assert len(r1["members"]) == 1
+
+    # Second spawn — different agent, same name
+    r2 = wm.warroom_spawn(name="idem-test", agents=["frontend-engineer"], cwd="/tmp")
+    assert r2["warroom_id"] == "idem-test"
+    assert len(r2["members"]) == 1
+    assert r2["members"][0]["qualified_name"] == "helioy-tools:frontend-engineer"
+
+    # DB must contain exactly one warroom and one member (the new one)
+    with db() as conn:
+        warrooms = conn.execute(
+            "SELECT * FROM warrooms WHERE warroom_id = 'idem-test'"
+        ).fetchall()
+        assert len(warrooms) == 1
+        members = conn.execute(
+            "SELECT * FROM warroom_members WHERE warroom_id = 'idem-test'"
+        ).fetchall()
+        assert len(members) == 1
+        assert members[0]["agent_type"] == "helioy-tools:frontend-engineer"
+
+
+# ── Warroom: spawn pane command line ─────────────────────────────────────────
+
+
+def test_spawn_pane_role_mode_includes_skip_permissions(monkeypatch):
+    """Role-mode panes launch claude with --dangerously-skip-permissions."""
+    import server._tmux as tmux_mod
+
+    call_log: list = []
+
+    def mock_tmux_check(*args):
+        call_log.append(args)
+        if args[0] == "new-window":
+            return "%42"
+        if args[0] == "display-message":
+            return "main:1.0"
+        return ""
+
+    monkeypatch.setattr(tmux_mod, "_tmux_check", mock_tmux_check)
+
+    tmux_mod._spawn_pane(
+        session="main",
+        window="test-room",
+        cwd="/tmp/project",
+        agent_type="backend-engineer",
+        qualified_name="helioy-tools:backend-engineer",
+        is_first=True,
+        layout="tiled",
+    )
+
+    send_keys_calls = [c for c in call_log if c[0] == "send-keys" and "claude" in str(c)]
+    assert len(send_keys_calls) == 1
+    cmd = send_keys_calls[0][3]  # tmux send-keys -t <pane_id> <cmd> Enter
+    assert "--dangerously-skip-permissions" in cmd
+    assert "--agent helioy-tools:backend-engineer" in cmd
+
+
+def test_spawn_pane_repo_mode_includes_skip_permissions(monkeypatch):
+    """Repo-mode panes also launch claude with --dangerously-skip-permissions."""
+    import server._tmux as tmux_mod
+
+    call_log: list = []
+
+    def mock_tmux_check(*args):
+        call_log.append(args)
+        if args[0] == "new-window":
+            return "%43"
+        if args[0] == "display-message":
+            return "main:1.0"
+        return ""
+
+    monkeypatch.setattr(tmux_mod, "_tmux_check", mock_tmux_check)
+
+    tmux_mod._spawn_pane(
+        session="main",
+        window="warroom",
+        cwd="/tmp/repo",
+        agent_type="general",
+        qualified_name=None,
+        is_first=True,
+        layout="tiled",
+    )
+
+    send_keys_calls = [c for c in call_log if c[0] == "send-keys" and "claude" in str(c)]
+    assert len(send_keys_calls) == 1
+    cmd = send_keys_calls[0][3]
+    assert "--dangerously-skip-permissions" in cmd
+    assert "--agent" not in cmd
+
+
 # ── Token tracking: warroom_status includes token_usage ──────────────────────
 
 

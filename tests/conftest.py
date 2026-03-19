@@ -20,6 +20,8 @@ def isolated_bus(tmp_path, monkeypatch):
     monkeypatch.setattr(_db_mod, "BUS_DIR", bus_dir)
     monkeypatch.setattr(_db_mod, "REGISTRY_DB", bus_dir / "registry.db")
     monkeypatch.setattr(_db_mod, "INBOX_DIR", bus_dir / "inbox")
+    # Reset init flag so each test gets a fresh schema bootstrap
+    monkeypatch.setattr(_db_mod, "_db_initialized", False)
 
     # Also patch bus_server's imported copies (used by tool functions and test assertions)
     import server.bus_server as bm

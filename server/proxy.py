@@ -34,7 +34,8 @@ def _log(msg: str) -> None:
 
 
 class HotReloadProxy:
-    def __init__(self) -> None:
+    def __init__(self, server_script: Path) -> None:
+        self.server_script = server_script
         self.proc: asyncio.subprocess.Process | None = None
         self.init_line: bytes | None = None  # raw bytes of the initialize request
         self.pending: list[bytes] = []       # messages buffered during restart
@@ -46,7 +47,7 @@ class HotReloadProxy:
         import os
         env = {**os.environ, "HELIOY_BUS_CLAUDE_PID": str(os.getppid())}
         self.proc = await asyncio.create_subprocess_exec(
-            PYTHON, str(SERVER_SCRIPT),
+            PYTHON, str(self.server_script),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=sys.stderr,
@@ -146,5 +147,4 @@ class HotReloadProxy:
 
 if __name__ == "__main__":
     target = sys.argv[1] if len(sys.argv) > 1 else "bus_server.py"
-    SERVER_SCRIPT = WATCH_DIR / target
-    asyncio.run(HotReloadProxy().run())
+    asyncio.run(HotReloadProxy(WATCH_DIR / target).run())

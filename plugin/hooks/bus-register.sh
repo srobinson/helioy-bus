@@ -47,9 +47,32 @@ PIDS_DIR="$BUS_DIR/pids"
 mkdir -p "$PIDS_DIR"
 echo "$AGENT_ID" > "$PIDS_DIR/$PPID"
 
-# Write directly to SQLite (no MCP server needed).
-# Values are passed via environment variables to avoid shell injection when
-# paths contain quotes or other special characters.
+# Derive the helioy-bus repo root so server._db is importable.
+# Priority order:
+#   1. HELIOY_BUS_PYTHON_PATH — explicit override, always wins
+#   2. CLAUDE_PLUGIN_ROOT     — set by Claude Code once that env var lands (TODO)
+#   3. BASH_SOURCE resolution — follows symlinks to the real script location,
+#                               so this works even when the hook is symlinked
+#                               from ~/.claude/plugins/ back to the repo
+if [[ -n "${HELIOY_BUS_PYTHON_PATH:-}" ]]; then
+    HELIOY_BUS_ROOT="$HELIOY_BUS_PYTHON_PATH"
+elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+    HELIOY_BUS_ROOT="$CLAUDE_PLUGIN_ROOT"
+else
+    _script="${BASH_SOURCE[0]}"
+    while [[ -L "$_script" ]]; do
+        _dir="$(cd "$(dirname "$_script")" && pwd)"
+        _target="$(readlink "$_script")"
+        [[ "$_target" != /* ]] && _target="$_dir/$_target"
+        _script="$_target"
+    done
+    HELIOY_BUS_ROOT="$(cd "$(dirname "$_script")/../.." && pwd)"
+    unset _script _dir _target
+fi
+
+# Write directly to SQLite via _db.py (single source of truth for schema).
+# All values passed through environment variables — never interpolated
+# into Python source — to prevent injection when paths contain special chars.
 _HELIOY_BUS_DIR="$BUS_DIR" \
 _HELIOY_INBOX_BASE="$INBOX_BASE" \
 _HELIOY_AGENT_ID="$AGENT_ID" \
@@ -57,67 +80,47 @@ _HELIOY_PWD="$PWD_EFFECTIVE" \
 _HELIOY_TMUX="$TMUX_TARGET" \
 _HELIOY_SESSION_ID="$SESSION_ID" \
 _HELIOY_AGENT_TYPE="$AGENT_TYPE" \
-python3 - <<PYEOF || true
-import sqlite3, os
-from datetime import datetime, timezone
+HELIOY_BUS_ROOT="$HELIOY_BUS_ROOT" \
+python3 - <<'PYEOF' || true
+import os, sys
 from pathlib import Path
 
-bus_dir = Path(os.environ["_HELIOY_BUS_DIR"])
-bus_dir.mkdir(parents=True, exist_ok=True)
+# Make server._db importable from the repo root
+sys.path.insert(0, os.environ["HELIOY_BUS_ROOT"])
 
-db_path = bus_dir / "registry.db"
-inbox = Path(os.environ["_HELIOY_INBOX_BASE"]) / os.environ["_HELIOY_AGENT_ID"]
+from server._db import BUS_DIR as _default_bus_dir, INBOX_DIR as _default_inbox_dir
+from server._db import _now, db
+import server._db as _db_mod
+
+# Override paths with hook-supplied values (may differ from defaults)
+bus_dir = Path(os.environ["_HELIOY_BUS_DIR"])
+inbox_base = Path(os.environ["_HELIOY_INBOX_BASE"])
+_db_mod.BUS_DIR = bus_dir
+_db_mod.REGISTRY_DB = bus_dir / "registry.db"
+_db_mod.INBOX_DIR = inbox_base
+
+# Create inbox directory for this agent
+inbox = inbox_base / os.environ["_HELIOY_AGENT_ID"]
 inbox.mkdir(parents=True, exist_ok=True)
 
-conn = sqlite3.connect(str(db_path), timeout=5)
-conn.executescript("""
-    PRAGMA journal_mode=WAL;
-    PRAGMA synchronous=NORMAL;
-    CREATE TABLE IF NOT EXISTS agents (
-        agent_id      TEXT PRIMARY KEY,
-        cwd           TEXT NOT NULL,
-        tmux_target   TEXT NOT NULL DEFAULT '',
-        pid           INTEGER,
-        session_id    TEXT NOT NULL DEFAULT '',
-        agent_type    TEXT NOT NULL DEFAULT 'general',
-        registered_at TEXT NOT NULL,
-        last_seen     TEXT NOT NULL
-    );
-""")
-
-# Add session_id column if upgrading from older schema
-try:
-    conn.execute("ALTER TABLE agents ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
-except Exception:
-    pass  # column already exists
-
-# Add agent_type column if upgrading from older schema
-try:
-    conn.execute("ALTER TABLE agents ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'general'")
-except Exception:
-    pass  # column already exists
-
-now = datetime.now(timezone.utc).isoformat()
-pid = os.getpid()
-
-conn.execute(
-    """
-    INSERT OR REPLACE INTO agents
-        (agent_id, cwd, tmux_target, pid, session_id, agent_type, registered_at, last_seen)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """,
-    (
-        os.environ["_HELIOY_AGENT_ID"],
-        os.environ["_HELIOY_PWD"],
-        os.environ["_HELIOY_TMUX"],
-        pid,
-        os.environ.get("_HELIOY_SESSION_ID", ""),
-        os.environ.get("_HELIOY_AGENT_TYPE", "general"),
-        now, now,
-    ),
-)
-conn.commit()
-conn.close()
+# Bootstrap schema (idempotent) and register in one transaction
+with db() as conn:
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO agents
+            (agent_id, cwd, tmux_target, pid, session_id, agent_type, registered_at, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            os.environ["_HELIOY_AGENT_ID"],
+            os.environ["_HELIOY_PWD"],
+            os.environ["_HELIOY_TMUX"],
+            os.getpid(),
+            os.environ.get("_HELIOY_SESSION_ID", ""),
+            os.environ.get("_HELIOY_AGENT_TYPE", "general"),
+            _now(), _now(),
+        ),
+    )
 PYEOF
 
 # Emit empty JSON (hooks require valid JSON or no output)
