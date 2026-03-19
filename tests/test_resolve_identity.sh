@@ -229,6 +229,41 @@ do
     fi
 done
 
+# ── Test 8: Symlink-safe HELIOY_BUS_ROOT resolution ──────────────────────────
+echo ""
+echo "--- Symlink-safe repo root resolution (relative symlink install) ---"
+
+_SYMLINK_TMP=$(mktemp -d)
+_symlink_cleanup() { rm -rf "$_SYMLINK_TMP"; }
+trap _symlink_cleanup EXIT
+
+# Build a fake repo layout: real/plugin/hooks/bus-register.sh
+mkdir -p "$_SYMLINK_TMP/real/plugin/hooks"
+
+# Write a minimal probe script that uses the exact resolution logic from
+# bus-register.sh and prints the derived HELIOY_BUS_ROOT.
+cat > "$_SYMLINK_TMP/real/plugin/hooks/bus-register.sh" <<'PROBE'
+#!/usr/bin/env bash
+_script="${BASH_SOURCE[0]}"
+while [[ -L "$_script" ]]; do
+    _dir="$(cd "$(dirname "$_script")" && pwd)"
+    _target="$(readlink "$_script")"
+    [[ "$_target" != /* ]] && _target="$_dir/$_target"
+    _script="$_target"
+done
+printf '%s' "$(cd "$(dirname "$_script")/../.." && pwd)"
+PROBE
+chmod +x "$_SYMLINK_TMP/real/plugin/hooks/bus-register.sh"
+
+# Create a relative symlink: link_dir/bus-register.sh -> ../real/plugin/hooks/bus-register.sh
+mkdir -p "$_SYMLINK_TMP/link_dir"
+(cd "$_SYMLINK_TMP/link_dir" && ln -sf "../real/plugin/hooks/bus-register.sh" bus-register.sh)
+
+# Run the probe via the symlink and verify the resolved root
+_got=$(bash "$_SYMLINK_TMP/link_dir/bus-register.sh")
+_expected="$_SYMLINK_TMP/real"
+assert_eq "relative symlink resolves to correct repo root" "$_got" "$_expected"
+
 # ── Summary -------------------------------------------------------------------
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

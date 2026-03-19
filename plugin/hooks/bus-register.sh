@@ -61,10 +61,13 @@ elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
 else
     _script="${BASH_SOURCE[0]}"
     while [[ -L "$_script" ]]; do
-        _script="$(readlink "$_script")"
+        _dir="$(cd "$(dirname "$_script")" && pwd)"
+        _target="$(readlink "$_script")"
+        [[ "$_target" != /* ]] && _target="$_dir/$_target"
+        _script="$_target"
     done
     HELIOY_BUS_ROOT="$(cd "$(dirname "$_script")/../.." && pwd)"
-    unset _script
+    unset _script _dir _target
 fi
 
 # Write directly to SQLite via _db.py (single source of truth for schema).
