@@ -34,9 +34,13 @@ fi
 
 # Values passed via environment variables to avoid shell injection when
 # paths contain quotes or other special characters.
+LOG_DIR="$BUS_DIR/logs"
+mkdir -p "$LOG_DIR"
+
+_py_stderr=$(
 _HELIOY_DB_PATH="$DB_PATH" \
 _HELIOY_AGENT_ID="$AGENT_ID" \
-python3 - <<PYEOF || true
+python3 - <<'PYEOF' 2>&1
 import sqlite3, os
 from pathlib import Path
 
@@ -50,5 +54,10 @@ conn.execute("DELETE FROM agents WHERE agent_id = ?", (os.environ["_HELIOY_AGENT
 conn.commit()
 conn.close()
 PYEOF
+) || {
+    printf '[%s] bus-unregister FAIL agent_id=%s\nstderr: %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" "$AGENT_ID" "$_py_stderr" \
+        >> "$LOG_DIR/hook-errors.log"
+}
 
 echo "{}"

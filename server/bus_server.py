@@ -153,6 +153,16 @@ def list_agents(tmux_filter: str = "") -> list[dict]:
         dead_ids: set[str] = {
             r["agent_id"] for r in alive_rows if not _tmux_pane_alive(r["tmux_target"])
         }
+        # PID-based pruning for agents without a tmux_target.
+        no_tmux_rows = conn.execute(
+            "SELECT agent_id, pid FROM agents WHERE tmux_target = '' AND pid IS NOT NULL"
+        ).fetchall()
+        for r in no_tmux_rows:
+            try:
+                os.kill(r["pid"], 0)
+            except (OSError, ProcessLookupError):
+                dead_ids.add(r["agent_id"])
+
         if dead_ids:
             placeholders = ",".join("?" * len(dead_ids))
             conn.execute(

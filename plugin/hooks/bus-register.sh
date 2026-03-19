@@ -73,6 +73,10 @@ fi
 # Write directly to SQLite via _db.py (single source of truth for schema).
 # All values passed through environment variables — never interpolated
 # into Python source — to prevent injection when paths contain special chars.
+LOG_DIR="$BUS_DIR/logs"
+mkdir -p "$LOG_DIR"
+PY_STDERR=$(mktemp)
+
 _HELIOY_BUS_DIR="$BUS_DIR" \
 _HELIOY_INBOX_BASE="$INBOX_BASE" \
 _HELIOY_AGENT_ID="$AGENT_ID" \
@@ -80,8 +84,9 @@ _HELIOY_PWD="$PWD_EFFECTIVE" \
 _HELIOY_TMUX="$TMUX_TARGET" \
 _HELIOY_SESSION_ID="$SESSION_ID" \
 _HELIOY_AGENT_TYPE="$AGENT_TYPE" \
+_HELIOY_PID="$PPID" \
 HELIOY_BUS_ROOT="$HELIOY_BUS_ROOT" \
-python3 - <<'PYEOF' || true
+python3 - <<'PYEOF' 2>"$PY_STDERR"
 import os, sys
 from pathlib import Path
 
@@ -103,7 +108,8 @@ _db_mod.INBOX_DIR = inbox_base
 inbox = inbox_base / os.environ["_HELIOY_AGENT_ID"]
 inbox.mkdir(parents=True, exist_ok=True)
 
-# Bootstrap schema (idempotent) and register in one transaction
+# Bootstrap schema (idempotent) and register in one transaction.
+# Use parent PID (Claude Code process), not this subprocess PID.
 with db() as conn:
     conn.execute(
         """
@@ -115,13 +121,36 @@ with db() as conn:
             os.environ["_HELIOY_AGENT_ID"],
             os.environ["_HELIOY_PWD"],
             os.environ["_HELIOY_TMUX"],
-            os.getpid(),
+            int(os.environ["_HELIOY_PID"]),
             os.environ.get("_HELIOY_SESSION_ID", ""),
             os.environ.get("_HELIOY_AGENT_TYPE", "general"),
             _now(), _now(),
         ),
     )
 PYEOF
+PY_EXIT=$?
+
+if [[ $PY_EXIT -ne 0 ]]; then
+    printf '[%s] bus-register FAIL agent_id=%s exit=%d\nstderr: %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" "$AGENT_ID" "$PY_EXIT" \
+        "$(cat "$PY_STDERR")" >> "$LOG_DIR/hook-errors.log"
+fi
+rm -f "$PY_STDERR"
+
+# Prune stale PID files for processes that no longer exist.
+# Runs on every SessionStart to prevent unbounded growth.
+for pid_file in "$PIDS_DIR"/*; do
+    [[ -f "$pid_file" ]] || continue
+    pid_num="${pid_file##*/}"
+    # Skip non-numeric filenames (e.g. .token_watcher artifacts)
+    [[ "$pid_num" =~ ^[0-9]+$ ]] || continue
+    # Skip our own entry
+    [[ "$pid_num" == "$PPID" ]] && continue
+    # Remove if the process no longer exists
+    if ! kill -0 "$pid_num" 2>/dev/null; then
+        rm -f "$pid_file"
+    fi
+done
 
 # Emit empty JSON (hooks require valid JSON or no output)
 echo "{}"
