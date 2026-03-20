@@ -152,5 +152,18 @@ for pid_file in "$PIDS_DIR"/*; do
     fi
 done
 
+# Install tmux hooks for proactive registry cleanup on kill-pane/kill-window.
+# Uses indexed array slots [99] to avoid clobbering user hooks.
+# Idempotent: re-setting the same index overwrites the previous value.
+# Passes TMUX_BIN explicitly because run-shell has a minimal PATH.
+if [[ -n "${TMUX:-}" ]]; then
+    PRUNE_SCRIPT="$HELIOY_BUS_ROOT/plugin/hooks/bus-prune.sh"
+    TMUX_BIN="$(command -v tmux)"
+    tmux set-hook -g 'after-kill-pane[99]' \
+        "run-shell \"TMUX_BIN=$TMUX_BIN $PRUNE_SCRIPT\"" 2>/dev/null || true
+    tmux set-hook -g 'window-unlinked[99]' \
+        "run-shell \"TMUX_BIN=$TMUX_BIN $PRUNE_SCRIPT\"" 2>/dev/null || true
+fi
+
 # Emit empty JSON (hooks require valid JSON or no output)
 echo "{}"
