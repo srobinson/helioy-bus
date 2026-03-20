@@ -48,27 +48,27 @@ mkdir -p "$PIDS_DIR"
 echo "$AGENT_ID" > "$PIDS_DIR/$PPID"
 
 # Derive the helioy-bus repo root so server._db is importable.
-# Priority order:
-#   1. HELIOY_BUS_PYTHON_PATH — explicit override, always wins
-#   2. CLAUDE_PLUGIN_ROOT     — set by Claude Code once that env var lands (TODO)
-#   3. BASH_SOURCE resolution — follows symlinks to the real script location,
-#                               so this works even when the hook is symlinked
-#                               from ~/.claude/plugins/ back to the repo
+# BASH_SOURCE resolution follows symlinks to the real script location.
+# CLAUDE_PLUGIN_ROOT points to the plugin cache (not the repo), so we ignore it.
+# HELIOY_BUS_PYTHON_PATH is an explicit override that always wins.
+_script="${BASH_SOURCE[0]}"
+while [[ -L "$_script" ]]; do
+    _dir="$(cd "$(dirname "$_script")" && pwd)"
+    _target="$(readlink "$_script")"
+    [[ "$_target" != /* ]] && _target="$_dir/$_target"
+    _script="$_target"
+done
+_BASH_SOURCE_ROOT="$(cd "$(dirname "$_script")/../.." && pwd)"
+unset _script _dir _target
+
+# Priority: explicit override > BASH_SOURCE (always correct for absolute hook paths).
+# CLAUDE_PLUGIN_ROOT points to the plugin cache, not the repo, so never use it.
 if [[ -n "${HELIOY_BUS_PYTHON_PATH:-}" ]]; then
     HELIOY_BUS_ROOT="$HELIOY_BUS_PYTHON_PATH"
-elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
-    HELIOY_BUS_ROOT="$CLAUDE_PLUGIN_ROOT"
 else
-    _script="${BASH_SOURCE[0]}"
-    while [[ -L "$_script" ]]; do
-        _dir="$(cd "$(dirname "$_script")" && pwd)"
-        _target="$(readlink "$_script")"
-        [[ "$_target" != /* ]] && _target="$_dir/$_target"
-        _script="$_target"
-    done
-    HELIOY_BUS_ROOT="$(cd "$(dirname "$_script")/../.." && pwd)"
-    unset _script _dir _target
+    HELIOY_BUS_ROOT="$_BASH_SOURCE_ROOT"
 fi
+unset _BASH_SOURCE_ROOT
 
 # Write directly to SQLite via _db.py (single source of truth for schema).
 # All values passed through environment variables — never interpolated
@@ -77,6 +77,7 @@ LOG_DIR="$BUS_DIR/logs"
 mkdir -p "$LOG_DIR"
 PY_STDERR=$(mktemp)
 
+set +e
 _HELIOY_BUS_DIR="$BUS_DIR" \
 _HELIOY_INBOX_BASE="$INBOX_BASE" \
 _HELIOY_AGENT_ID="$AGENT_ID" \
@@ -136,6 +137,7 @@ if [[ $PY_EXIT -ne 0 ]]; then
         "$(cat "$PY_STDERR")" >> "$LOG_DIR/hook-errors.log"
 fi
 rm -f "$PY_STDERR"
+set -e
 
 # Prune stale PID files for processes that no longer exist.
 # Runs on every SessionStart to prevent unbounded growth.
