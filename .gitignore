@@ -1,5 +1,7 @@
 __pycache__/
 .fmm.db
+.fmm.db-shm
+.fmm.db-wal
 .mypy_cache/
 .nancy/
 .pytest_cache/
