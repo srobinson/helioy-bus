@@ -122,23 +122,23 @@ def test_heartbeat_updates_last_seen():
 # ── Mailbox ───────────────────────────────────────────────────────────────────
 
 
-def test_send_message_to_registered_agent():
+def test_send_message_to_registered_agent(set_sender):
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/beta")
-    result = bm.send_message(
-        to="beta", content="hello", from_agent="alpha", nudge=False,
-    )
+    set_sender("alpha")
+    result = bm.send_message(to="beta", content="hello", nudge=False)
     assert result["delivered"] is True
     assert "beta" in result["recipients"]
 
 
-def test_send_message_writes_json_file():
+def test_send_message_writes_json_file(set_sender):
     import server._db as _db_mod
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/target")
-    bm.send_message(to="target", content="payload", from_agent="src", nudge=False)
+    set_sender("src")
+    bm.send_message(to="target", content="payload", nudge=False)
 
     inbox = _db_mod.INBOX_DIR / "target"
     files = list(inbox.glob("*.json"))
@@ -148,43 +148,47 @@ def test_send_message_writes_json_file():
     assert data["from"] == "src"
 
 
-def test_send_message_atomic_write():
+def test_send_message_atomic_write(set_sender):
     """No .tmp files left after a successful send."""
     import server._db as _db_mod
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/target")
-    bm.send_message(to="target", content="x", from_agent="y", nudge=False)
+    set_sender("y")
+    bm.send_message(to="target", content="x", nudge=False)
 
     inbox = _db_mod.INBOX_DIR / "target"
     tmp_files = list(inbox.glob("*.tmp"))
     assert tmp_files == []
 
 
-def test_send_message_recipient_not_found():
+def test_send_message_recipient_not_found(set_sender):
     import server.bus_server as bm
 
-    result = bm.send_message(to="ghost", content="hi", from_agent="me", nudge=False)
+    set_sender("me")
+    result = bm.send_message(to="ghost", content="hi", nudge=False)
     assert result["delivered"] is False
     assert "error" in result
 
 
-def test_send_message_broadcast():
+def test_send_message_broadcast(set_sender):
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/a")
     bm.register_agent(pwd="/tmp/b")
-    result = bm.send_message(to="*", content="hello all", from_agent="sender", nudge=False)
+    set_sender("sender")
+    result = bm.send_message(to="*", content="hello all", nudge=False)
     assert set(result["recipients"]) == {"a", "b"}
 
 
-def test_get_messages_returns_and_archives():
+def test_get_messages_returns_and_archives(set_sender):
     import server._db as _db_mod
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/reader")
-    bm.send_message(to="reader", content="msg1", from_agent="w", nudge=False)
-    bm.send_message(to="reader", content="msg2", from_agent="w", nudge=False)
+    set_sender("w")
+    bm.send_message(to="reader", content="msg1", nudge=False)
+    bm.send_message(to="reader", content="msg2", nudge=False)
 
     messages = bm.get_messages("reader")
     assert len(messages) == 2
@@ -205,11 +209,12 @@ def test_get_messages_empty_inbox():
     assert messages == []
 
 
-def test_get_messages_idempotent():
+def test_get_messages_idempotent(set_sender):
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/reader")
-    bm.send_message(to="reader", content="once", from_agent="w", nudge=False)
+    set_sender("w")
+    bm.send_message(to="reader", content="once", nudge=False)
 
     first = bm.get_messages("reader")
     assert len(first) == 1
@@ -249,45 +254,42 @@ def test_list_agents_keeps_agents_without_tmux_target():
 # ── Nudge behavior ───────────────────────────────────────────────────────────
 
 
-def test_send_message_nudge_skips_dead_pane():
+def test_send_message_nudge_skips_dead_pane(set_sender):
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/dead", tmux_target="main:9.9", agent_id="dead:main:9.9")
+    set_sender("nudger")
     with patch.object(bm, "_tmux_pane_alive", return_value=False):
-        result = bm.send_message(
-            to="dead:main:9.9", content="wake up", from_agent="nudger"
-        )
+        result = bm.send_message(to="dead:main:9.9", content="wake up")
     assert result["delivered"] is True
     assert result["nudged"] is False
 
 
-def test_send_message_nudge_suppressed_with_flag():
+def test_send_message_nudge_suppressed_with_flag(set_sender):
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/quiet", tmux_target="main:0.0", agent_id="quiet:main:0.0")
+    set_sender("sender")
     with (
         patch.object(bm, "_tmux_pane_alive", return_value=True),
         patch.object(bm, "_tmux_nudge", return_value=True) as mock_nudge,
     ):
-        result = bm.send_message(
-            to="quiet:main:0.0", content="shh", from_agent="sender", nudge=False
-        )
+        result = bm.send_message(to="quiet:main:0.0", content="shh", nudge=False)
     assert result["nudged"] is False
     mock_nudge.assert_not_called()
 
 
-def test_send_message_nudges_live_pane():
+def test_send_message_nudges_live_pane(set_sender):
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/live", tmux_target="main:0.0", agent_id="live:main:0.0")
+    set_sender("sender")
     with (
         patch.object(bm, "_tmux_pane_alive", return_value=True),
         patch.object(bm, "_tmux_nudge", return_value=True),
         patch.object(bm, "_nudge_allowed", return_value=True),
     ):
-        result = bm.send_message(
-            to="live:main:0.0", content="ping", from_agent="sender"
-        )
+        result = bm.send_message(to="live:main:0.0", content="ping")
     assert result["nudged"] is True
 
 
@@ -315,50 +317,54 @@ def test_register_agent_default_type_is_general():
 # ── Role-based messaging ─────────────────────────────────────────────────────
 
 
-def test_send_message_role_addressing_delivers_to_matching_agents():
+def test_send_message_role_addressing_delivers_to_matching_agents(set_sender):
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/be1", agent_id="be1", agent_type="backend-engineer")
     bm.register_agent(pwd="/tmp/be2", agent_id="be2", agent_type="backend-engineer")
     bm.register_agent(pwd="/tmp/fe", agent_id="fe", agent_type="frontend-engineer")
 
+    set_sender("orch")
     result = bm.send_message(
-        to="role:backend-engineer", content="build it", from_agent="orch", nudge=False
+        to="role:backend-engineer", content="build it", nudge=False
     )
     assert result["delivered"] is True
     assert set(result["recipients"]) == {"be1", "be2"}
 
 
-def test_send_message_role_addressing_excludes_sender():
+def test_send_message_role_addressing_excludes_sender(set_sender):
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/be", agent_id="be", agent_type="backend-engineer")
+    set_sender("be")
     result = bm.send_message(
-        to="role:backend-engineer", content="self", from_agent="be", nudge=False
+        to="role:backend-engineer", content="self", nudge=False
     )
     assert result["delivered"] is False
 
 
-def test_send_message_role_not_found_returns_error():
+def test_send_message_role_not_found_returns_error(set_sender):
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/x", agent_id="x", agent_type="general")
+    set_sender("y")
     result = bm.send_message(
-        to="role:nonexistent", content="x", from_agent="y", nudge=False
+        to="role:nonexistent", content="x", nudge=False
     )
     assert result["delivered"] is False
     assert "error" in result
 
 
-def test_send_message_role_creates_inbox_files():
+def test_send_message_role_creates_inbox_files(set_sender):
     import server._db as _db_mod
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/be", agent_id="be", agent_type="backend-engineer")
     bm.register_agent(pwd="/tmp/fe", agent_id="fe", agent_type="frontend-engineer")
 
+    set_sender("orch")
     bm.send_message(
-        to="role:backend-engineer", content="task", from_agent="orch", nudge=False
+        to="role:backend-engineer", content="task", nudge=False
     )
 
     be_inbox = _db_mod.INBOX_DIR / "be"
@@ -372,7 +378,7 @@ def test_send_message_role_creates_inbox_files():
 # ── Lifecycle integration tests ──────────────────────────────────────────────
 
 
-def test_repo_mode_lifecycle():
+def test_repo_mode_lifecycle(set_sender):
     """Simulates the repo-mode lifecycle: register multiple general agents,
     send between them, receive, then unregister."""
     import server.bus_server as bm
@@ -394,10 +400,10 @@ def test_repo_mode_lifecycle():
     assert all(a["agent_type"] == "general" for a in agents)
 
     # Direct message between two repo-mode agents
+    set_sender("fmm:general:7:2.1")
     result = bm.send_message(
         to="helioy-bus:general:7:2.2",
         content="hi from fmm",
-        from_agent="fmm:general:7:2.1",
         nudge=False,
     )
     assert result["delivered"] is True
@@ -414,7 +420,7 @@ def test_repo_mode_lifecycle():
         assert bm.list_agents() == []
 
 
-def test_role_mode_lifecycle():
+def test_role_mode_lifecycle(set_sender):
     """Simulates the crew/role-mode lifecycle: register specialist agents,
     send via role addressing, receive, verify isolation."""
     import server.bus_server as bm
@@ -440,10 +446,10 @@ def test_role_mode_lifecycle():
     )
 
     # Role-based send: only backend-engineer should receive
+    set_sender("helioy-bus:general:7:3.3")
     result = bm.send_message(
         to="role:backend-engineer",
         content="implement the auth endpoint",
-        from_agent="orchestrator",
         nudge=False,
     )
     assert result["delivered"] is True
@@ -461,7 +467,7 @@ def test_role_mode_lifecycle():
     assert msgs_be[0]["content"] == "implement the auth endpoint"
 
 
-def test_coexistence_of_both_modes():
+def test_coexistence_of_both_modes(set_sender):
     """Both warroom (general) and crew (specialist) agents coexist and can
     message each other directly or via broadcast."""
     import server.bus_server as bm
@@ -495,10 +501,9 @@ def test_coexistence_of_both_modes():
         agents = bm.list_agents()
     assert len(agents) == 4
 
-    # Broadcast from orchestrator reaches all four agents
-    result = bm.send_message(
-        to="*", content="standup time", from_agent="orchestrator", nudge=False
-    )
+    # Broadcast from a non-registered sender reaches all four agents
+    set_sender("external-orchestrator")
+    result = bm.send_message(to="*", content="standup time", nudge=False)
     assert set(result["recipients"]) == {
         "fmm:general:7:2.1",
         "helioy-bus:general:7:2.2",
@@ -506,17 +511,17 @@ def test_coexistence_of_both_modes():
         "helioy-bus:frontend-engineer:7:3.2",
     }
 
-    # Role-based send reaches only specialists
+    # Role-based send from a registered agent reaches only matching specialists
+    set_sender("fmm:general:7:2.1")
     result2 = bm.send_message(
         to="role:backend-engineer",
         content="deploy the API",
-        from_agent="fmm:general:7:2.1",
         nudge=False,
     )
     assert result2["recipients"] == ["helioy-bus:backend-engineer:7:3.1"]
 
 
-def test_adhoc_session_fallback_identity():
+def test_adhoc_session_fallback_identity(set_sender):
     """An ad-hoc claude session (no warroom) registers with basename identity."""
     import server.bus_server as bm
 
@@ -530,9 +535,8 @@ def test_adhoc_session_fallback_identity():
     assert agent["agent_type"] == "general"
 
     # Can receive direct messages
-    result = bm.send_message(
-        to="myproject", content="hello from peer", from_agent="other", nudge=False
-    )
+    set_sender("other")
+    result = bm.send_message(to="myproject", content="hello from peer", nudge=False)
     assert result["delivered"] is True
 
     bm.unregister_agent("myproject")

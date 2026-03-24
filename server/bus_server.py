@@ -136,10 +136,11 @@ def list_agents(tmux_filter: str = "") -> list[dict]:
     """List all registered agents, lazily pruning dead tmux panes.
 
     Args:
-        tmux_filter: Optional tmux scope filter. Accepts "session" to list
-                     agents in that tmux session, or "session:window" to
-                     narrow to a specific window. Agents are matched by
-                     their tmux_target prefix. Omit to list all agents.
+        tmux_filter: Optional tmux target prefix to filter by. Examples:
+                     "2" lists all agents in tmux session 2,
+                     "2:1" narrows to window 1 of session 2,
+                     "main" lists agents in the session named "main".
+                     Omit to list all agents.
 
     Returns a list of agent cards with: agent_id, cwd, tmux_target,
     pid, registered_at, last_seen. Agents whose tmux pane no longer
@@ -240,7 +241,6 @@ def heartbeat(agent_id: str) -> dict:
 def send_message(
     to: str,
     content: str,
-    from_agent: str = "",
     reply_to: str = "",
     topic: str = "",
     nudge: bool = True,
@@ -250,11 +250,14 @@ def send_message(
     Writes an atomic JSON file to ~/.helioy/bus/inbox/{to}/ and optionally
     sends a tmux nudge to wake the recipient if it is idle.
 
+    Sender identity is resolved automatically from the calling agent's
+    registration (PID file, tmux pane title, or cwd basename fallback).
+
     Args:
         to: Recipient agent_id. Use "*" to broadcast to all registered agents.
+            Use "role:<type>" to target all agents with that agent_type.
         content: Message body (plain text or markdown).
-        from_agent: Sender agent_id. Inferred from cwd basename if omitted.
-        reply_to: Address recipients should reply to. Defaults to from_agent.
+        reply_to: Address recipients should reply to. Defaults to sender.
                   Set to "*" to make replies go to all agents (group thread).
         topic: Optional thread identifier (e.g. "am-retention-2026-03-07").
                Human-readable. Used to filter messages by topic in get_messages.
@@ -265,8 +268,7 @@ def send_message(
         {"message_id": str, "delivered": bool, "nudged": bool,
          "recipients": [agent_id, ...]}
     """
-    if not from_agent:
-        from_agent = _self_agent_id()
+    from_agent = _self_agent_id()
     if not reply_to:
         reply_to = from_agent
 

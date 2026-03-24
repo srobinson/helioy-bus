@@ -32,6 +32,21 @@ def isolated_bus(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
+def set_sender(monkeypatch):
+    """Mock _self_agent_id to control sender identity in send_message calls.
+
+    Usage: set_sender("alpha") before calling bm.send_message().
+    Can be called multiple times to change identity mid-test.
+    """
+    import server.bus_server as bm
+
+    def _set(agent_id: str):
+        monkeypatch.setattr(bm, "_self_agent_id", lambda: agent_id)
+
+    return _set
+
+
+@pytest.fixture()
 def fake_plugins(tmp_path, monkeypatch):
     """Create a fake plugin cache with known agent definitions."""
     import server._db as _db_mod

@@ -2,9 +2,9 @@
 
 ## Overview
 
-helioy-bus is an MCP server that provides inter-agent communication for Claude Code instances. It is part of the [Helioy ecosystem](https://github.com/helioy), which includes context-matters (structured context store), fmm (code structural intelligence), nancyr (multi-agent orchestrator), markdown-matters (markdown indexing), and helioy-plugins (Claude Code plugin layer).
+helioy-bus is a pair of MCP servers that provide inter-agent communication and multi-agent orchestration for Claude Code instances. It is part of the [Helioy ecosystem](https://github.com/helioy), which includes context-matters (structured context store), attention-matters (geometric memory), fmm (code structural intelligence), nancyr (multi-agent orchestrator), markdown-matters (markdown indexing), and helioy-plugins (Claude Code plugin layer).
 
-The bus solves a specific problem: Claude Code sessions are isolated stdio processes with no built-in way to discover or communicate with each other. helioy-bus bridges this gap using the filesystem as shared memory and tmux as the notification channel.
+The bus solves a specific problem: Claude Code sessions are isolated stdio processes with no built-in way to discover or communicate with each other. helioy-bus bridges this gap using the filesystem as shared memory and tmux as the notification channel. The warroom extends this with coordinated multi-agent spawning and lifecycle management.
 
 ## Architecture
 
@@ -14,39 +14,59 @@ Claude Code A          Claude Code B          Claude Code C
   [stdio]               [stdio]               [stdio]
      |                      |                      |
 helioy-bus MCP         helioy-bus MCP         helioy-bus MCP
+helioy-warroom MCP     helioy-warroom MCP     helioy-warroom MCP
      |                      |                      |
      +----------+-----------+----------+-----------+
                 |                      |
         ~/.helioy/bus/           ~/.helioy/bus/
         registry.db              inbox/{agent_id}/
+                                 presets/
 ```
 
-Each Claude Code instance spawns its own helioy-bus process. There is no central daemon. Coordination happens through:
+Each Claude Code instance spawns its own helioy-bus process (and optionally a helioy-warroom process). There is no central daemon. Coordination happens through:
 
-1. **SQLite registry** (`registry.db`): Agents register on startup and are pruned lazily when their tmux pane dies.
-2. **File-based mailboxes** (`inbox/{agent_id}/*.json`): Messages are atomic JSON files written via temp + rename. Read messages move to `inbox/{agent_id}/archive/`.
+1. **SQLite registry** (`registry.db`): Agents register on startup and are pruned lazily when their tmux pane dies. WAL mode enables concurrent reads across processes.
+2. **File-based mailboxes** (`inbox/{agent_id}/*.json`): Messages are atomic JSON files written via temp + rename. Read messages move to `inbox/{agent_id}/archive/` with 7-day TTL.
 3. **tmux nudges**: When a message arrives, the bus sends `"you have mail!"` + Enter to the recipient's tmux pane, waking idle Claude sessions. Nudges are throttled (30s per recipient) and handle copy-mode gracefully.
+4. **Warroom orchestration**: Spawns coordinated agent layouts in tmux windows, manages lifecycle, and supports presets for repeatable configurations.
 
 ## File Structure
 
 ```
 server/
-  bus_server.py    # MCP server: 6 tools, SQLite registry, file mailboxes, tmux nudges
-  proxy.py         # Hot-reload dev proxy: watches server/ for .py changes, restarts inner process
+  bus_server.py        # Bus MCP server: 7 tools (registry, messaging, identity)
+  warroom_server.py    # Warroom MCP server: 9 tools (spawn, status, presets)
+  warroom_cli.py       # CLI entry point for warroom operations
+  proxy.py             # Hot-reload dev proxy: watches server/ for changes, restarts transparently
+  _db.py               # Shared database layer, path constants, logging
+  _tmux.py             # Tmux operations: nudging, pane spawning, liveness checks
+  _warroom.py          # Warroom helpers: frontmatter parsing, agent type scanning
+  _identity.py         # Agent identity resolution (PID files, shell resolver, fallback)
 
 plugin/
+  hooks/
+    bus-register.sh      # SessionStart: registers agent on the bus
+    bus-unregister.sh    # SessionStop: unregisters agent
+    bus-prune.sh         # Prunes stale agents from registry
+    check-mail.sh        # PreToolUse: notifies agent of unread messages
+    stop-check-mail.sh   # Stop: halts mail checking
+    token-capture.sh     # Captures token usage metrics
+    lib/
+      resolve-identity.sh  # Authoritative identity resolver (shared by hooks)
   scripts/
-    warroom.sh     # Tmux layout spawner: repo-mode and role-mode agent windows
-
-scripts/
-  agents.py        # Debug: dump agent registry
-  inboxes.py       # Debug: show inbox counts
+    warroom.sh           # Legacy tmux layout spawner (repo-mode and role-mode)
 
 tests/
-  test_bus_server.py  # 36 test cases covering all tools and edge cases
+  test_bus_server.py      # 40 test functions covering all bus tools
+  test_warroom_server.py  # 39 test functions covering warroom operations
+  conftest.py             # Shared fixtures
 ```
 
-## MCP Tools
+## MCP Tools: Bus Server
+
+### whoami
+
+Returns the calling agent's full identity record from the registry: agent_id, agent_type, tmux_target, cwd, session_id, registered_at, and token_usage.
 
 ### register_agent
 
@@ -54,7 +74,7 @@ Registers a Claude Code instance in the SQLite registry. Identity is derived fro
 
 ### unregister_agent
 
-Removes an agent from the registry by ID. Called on session teardown.
+Removes an agent from the registry by ID. Called on session teardown via the `bus-unregister.sh` hook.
 
 ### list_agents
 
@@ -78,7 +98,45 @@ After delivery, the bus optionally sends a tmux nudge (literal keystroke injecti
 
 ### get_messages
 
-Reads all unread messages from an agent's inbox, moving them to `archive/` on read. Supports `topic` filtering, where non-matching messages remain unread in the inbox.
+Reads all unread messages from an agent's inbox, moving them to `archive/` on read. Supports `topic` filtering, where non-matching messages remain unread in the inbox. Archived messages are cleaned up after 7 days.
+
+## MCP Tools: Warroom Server
+
+### warroom_discover
+
+Searches available agent types by scanning the Claude Code plugin cache for agent definitions. Filters by query substring and/or plugin namespace.
+
+### warroom_spawn_repos
+
+Spawns a warroom window with one pane per Helioy repository, each running a general-purpose agent.
+
+### warroom_spawn
+
+Spawns a named warroom window with specialist agents (e.g., `backend-engineer`, `clinical-reviewer`) all working in a specified directory.
+
+### warroom_status
+
+Returns the current state of all warroom windows: panes, agent types, registration status, and liveness.
+
+### warroom_add
+
+Adds a new agent pane to an existing warroom window.
+
+### warroom_remove
+
+Removes an agent pane from a warroom window and unregisters it from the bus.
+
+### warroom_kill
+
+Destroys an entire warroom window and all its agents.
+
+### warroom_presets
+
+Lists saved warroom configurations for repeatable multi-agent setups.
+
+### warroom_save_preset
+
+Saves the current warroom configuration as a named preset.
 
 ## Database Schema
 
@@ -90,7 +148,8 @@ CREATE TABLE agents (
     pid           INTEGER,
     session_id    TEXT NOT NULL DEFAULT '',
     agent_type    TEXT NOT NULL DEFAULT 'general',
-    profile       TEXT,           -- JSON blob, nullable
+    profile       TEXT,
+    token_usage   TEXT NOT NULL DEFAULT '{}',
     registered_at TEXT NOT NULL,
     last_seen     TEXT NOT NULL
 );
@@ -99,9 +158,26 @@ CREATE TABLE nudge_log (
     agent_id  TEXT NOT NULL,
     nudged_at TEXT NOT NULL
 );
-```
 
-WAL mode is enabled for concurrent reads across multiple bus processes.
+CREATE TABLE warrooms (
+    warroom_id   TEXT PRIMARY KEY,
+    tmux_session TEXT NOT NULL,
+    tmux_window  TEXT NOT NULL,
+    cwd          TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE TABLE warroom_members (
+    warroom_id   TEXT NOT NULL REFERENCES warrooms(warroom_id) ON DELETE CASCADE,
+    agent_type   TEXT NOT NULL,
+    tmux_target  TEXT NOT NULL,
+    pane_id      TEXT NOT NULL,
+    agent_id     TEXT,
+    spawned_at   TEXT NOT NULL,
+    PRIMARY KEY (warroom_id, agent_type)
+);
+```
 
 ## Message Format
 
@@ -119,35 +195,32 @@ WAL mode is enabled for concurrent reads across multiple bus processes.
 
 Messages are stored as `{timestamp}_{message_id_prefix}.json` in the recipient's inbox directory. Filenames use the ISO timestamp with colons replaced by hyphens for filesystem compatibility.
 
-## Hot-Reload Proxy
-
-`server/proxy.py` wraps the MCP server for development. It watches `server/` for Python file changes and restarts the inner process transparently, replaying the MCP `initialize` handshake so the Claude Code client never sees a disconnect.
-
-## Warroom
-
-`plugin/scripts/warroom.sh` is a tmux layout manager that spawns Claude Code agents in coordinated configurations.
-
-**Repo-mode** (`warroom.sh` with no arguments): Creates a `warroom` window with one pane per Helioy repository. Each agent runs as `general` type.
-
-**Role-mode** (`warroom.sh <name> "type1 type2 ..."`): Creates a named window with one pane per specialist role, all working in the current directory. Example: `warroom.sh review "clinical-reviewer code-reviewer"` spawns two review specialists.
-
-Pane titles follow the format `{repo}:{agent_type}:{session}:{window}.{pane}`, which serves as the source of truth for identity resolution in bus hooks. Window title overrides are locked to prevent Claude Code from changing them.
-
 ## Identity Resolution
 
-Agent IDs are derived from context:
+Agent identity is resolved through a three-tier chain:
 
-1. If `agent_id` is passed explicitly to `register_agent`, it is used as-is.
-2. If `tmux_target` is provided, the ID becomes `{basename(pwd)}:{tmux_target}`.
-3. Otherwise, the ID is `basename(pwd)`.
+1. **PID file (fast path)**: At SessionStart, `bus-register.sh` writes the agent_id to `~/.helioy/bus/pids/{pid}`. The `_self_agent_id()` function reads this file for O(1) resolution.
+2. **Shell resolver (slow path)**: Falls back to `resolve-identity.sh`, which reads the tmux pane title (format: `{repo}:{agent_type}:{session}:{window}.{pane}`) and derives a consistent identity.
+3. **Basename fallback**: If both fail, uses `basename(cwd)` to maintain availability at the cost of potential identity divergence.
 
-The `_self_agent_id()` helper reads `TMUX_PANE` and the pane title to resolve identity for outbound messages when `from_agent` is omitted.
+## Entry Points
+
+```toml
+helioy-bus           = "server.bus_server:mcp"
+helioy-warroom       = "server.warroom_server:mcp"
+helioy-warroom-cli   = "server.warroom_cli:main"
+helioy-bus-initdb    = "server._db:_initdb_cli"
+```
+
+## Hot-Reload Proxy
+
+`server/proxy.py` wraps either MCP server for development. It watches `server/` for Python file changes and restarts the inner process transparently, replaying the MCP `initialize` handshake so the Claude Code client never sees a disconnect.
 
 ## Development
 
 ```bash
 uv sync                    # install dependencies
-uv run pytest              # run tests
+uv run pytest              # run tests (79 test functions)
 uv run ruff check .        # lint
 uv run mypy server/        # type check
 ```
@@ -155,7 +228,6 @@ uv run mypy server/        # type check
 ## Dependencies
 
 - **mcp[cli]** (>=1.0.0): MCP protocol SDK, provides FastMCP server framework
-- **mcp-hmr**: Hot module reload support for MCP servers (used by proxy.py)
-- **watchfiles**: Filesystem watcher for the hot-reload proxy
+- **mcp-hmr**: Hot module reload support for MCP servers (used by proxy.py, pulls in watchfiles)
 
 Dev dependencies: ruff, mypy, pytest, pytest-asyncio.
