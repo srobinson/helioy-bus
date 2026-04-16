@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 from mcp.server.fastmcp import FastMCP
 
 from server._db import INBOX_DIR, _dbg, _now, db
-from server._identity import _self_agent_id
+from server._identity import _self_agent_id, canonical_agent_id
 from server._tmux import (
     _nudge_allowed,
     _record_nudge,
@@ -84,9 +84,10 @@ def register_agent(
              $CLAUDE_PROJECT_DIR).
         tmux_target: tmux target for nudges, e.g. "main:1.0"
                      (session:window.pane). Auto-detected if omitted.
-        agent_id: Override the auto-derived agent ID. Defaults to
-                  "{basename(pwd)}:{tmux_target}" when tmux_target is provided,
-                  otherwise basename(pwd).
+        agent_id: Override the auto-derived agent ID. Defaults to the
+                  canonical form produced by canonical_agent_id():
+                  "{repo}:{agent_type}:{tmux_target}" when tmux_target is
+                  provided, otherwise "{repo}:{agent_type}".
         session_id: Claude Code session UUID. Set by claude-wrapper via
                     HELIOY_SESSION_ID env var. Enables JSONL stream access.
         agent_type: Specialist role of this agent (e.g. "general",
@@ -102,8 +103,7 @@ def register_agent(
         {"agent_id": str, "registered_at": str}
     """
     if not agent_id:
-        base = os.path.basename(pwd.rstrip("/")) or "unknown"
-        agent_id = f"{base}:{tmux_target}" if tmux_target else base
+        agent_id = canonical_agent_id(pwd, agent_type, tmux_target)
 
     # Pick up session_id from env if not passed directly
     if not session_id:

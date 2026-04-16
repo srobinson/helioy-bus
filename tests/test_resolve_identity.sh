@@ -76,22 +76,22 @@ echo "=== resolve-identity.sh tests ==="
 mkdir -p /tmp/helioy-test-myproject
 mkdir -p /tmp/helioy-test-myrepo
 
-# ── Test 1: No tmux, no CLAUDE_PROJECT_DIR -- fallback to PWD basename ----------
+# ── Test 1: No tmux, no CLAUDE_PROJECT_DIR -- canonical 2-segment fallback ------
 echo ""
 echo "--- Fallback: no tmux, no CLAUDE_PROJECT_DIR ---"
 
 result=$(run_resolve "WORKDIR=/tmp/helioy-test-myproject")
-assert_eq "agent_id is basename(PWD)"   "$(parse_result "$result" id)"   "helioy-test-myproject"
-assert_eq "agent_type defaults to general" "$(parse_result "$result" type)" "general"
-assert_eq "agent_repo is basename(PWD)" "$(parse_result "$result" repo)" "helioy-test-myproject"
+assert_eq "agent_id is {repo}:{agent_type}" "$(parse_result "$result" id)"   "helioy-test-myproject:general"
+assert_eq "agent_type defaults to general"  "$(parse_result "$result" type)" "general"
+assert_eq "agent_repo is basename(PWD)"     "$(parse_result "$result" repo)" "helioy-test-myproject"
 
 # ── Test 2: No tmux, with CLAUDE_PROJECT_DIR ----------------------------------
 echo ""
 echo "--- Fallback: no tmux, with CLAUDE_PROJECT_DIR ---"
 
 result=$(run_resolve "WORKDIR=/tmp" "CLAUDE_PROJECT_DIR=/tmp/helioy-bus-test")
-assert_eq "agent_id uses CLAUDE_PROJECT_DIR"   "$(parse_result "$result" id)"   "helioy-bus-test"
-assert_eq "agent_type defaults to general"     "$(parse_result "$result" type)" "general"
+assert_eq "agent_id uses CLAUDE_PROJECT_DIR" "$(parse_result "$result" id)"   "helioy-bus-test:general"
+assert_eq "agent_type defaults to general"   "$(parse_result "$result" type)" "general"
 assert_eq "agent_repo uses CLAUDE_PROJECT_DIR" "$(parse_result "$result" repo)" "helioy-bus-test"
 
 # ── Test 3: No tmux, HELIOY_BUS_AGENT_TYPE override ---------------------------
@@ -100,7 +100,7 @@ echo "--- Fallback with HELIOY_BUS_AGENT_TYPE override ---"
 
 result=$(run_resolve "WORKDIR=/tmp/helioy-test-myrepo" "HELIOY_BUS_AGENT_TYPE=backend-engineer")
 assert_eq "agent_type from HELIOY_BUS_AGENT_TYPE" "$(parse_result "$result" type)" "backend-engineer"
-assert_eq "agent_id is basename(PWD)"             "$(parse_result "$result" id)"   "helioy-test-myrepo"
+assert_eq "agent_id includes agent_type"          "$(parse_result "$result" id)"   "helioy-test-myrepo:backend-engineer"
 
 # ── Test 4: Identity pattern validation regex ----------------------------------
 echo ""

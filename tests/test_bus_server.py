@@ -17,18 +17,33 @@ import pytest
 
 
 def test_register_agent_basic():
+    """Auto-derivation without tmux produces the 2-segment canonical form."""
     import server.bus_server as bm
 
     result = bm.register_agent(pwd="/tmp/myproject")
-    assert result["agent_id"] == "myproject"
+    assert result["agent_id"] == "myproject:general"
     assert "registered_at" in result
 
 
 def test_register_agent_with_tmux_target_uses_compound_id():
+    """Auto-derivation with tmux produces the full 4-segment canonical form
+    including agent_type — never {basename}:{tmux_target} alone."""
     import server.bus_server as bm
 
     result = bm.register_agent(pwd="/tmp/myproject", tmux_target="7:1.2")
-    assert result["agent_id"] == "myproject:7:1.2"
+    assert result["agent_id"] == "myproject:general:7:1.2"
+
+
+def test_register_agent_with_tmux_target_and_type():
+    """Auto-derivation honors agent_type in the canonical form."""
+    import server.bus_server as bm
+
+    result = bm.register_agent(
+        pwd="/tmp/myproject",
+        tmux_target="7:1.2",
+        agent_type="backend-engineer",
+    )
+    assert result["agent_id"] == "myproject:backend-engineer:7:1.2"
 
 
 def test_register_agent_explicit_id():
@@ -43,7 +58,7 @@ def test_register_creates_inbox(tmp_path):
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/myproject")
-    inbox = _db_mod.INBOX_DIR / "myproject"
+    inbox = _db_mod.INBOX_DIR / "myproject:general"
     assert inbox.is_dir()
 
 
@@ -111,8 +126,8 @@ def test_list_agents_after_register():
 
     agents = bm.list_agents()
     ids = [a["agent_id"] for a in agents]
-    assert "alpha" in ids
-    assert "beta" in ids
+    assert "alpha:general" in ids
+    assert "beta:general" in ids
 
 
 def test_list_agents_filter_by_session():
@@ -153,8 +168,8 @@ def test_unregister_agent():
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/myproject")
-    result = bm.unregister_agent("myproject")
-    assert result["unregistered"] == "myproject"
+    result = bm.unregister_agent("myproject:general")
+    assert result["unregistered"] == "myproject:general"
     assert bm.list_agents() == []
 
 
@@ -163,8 +178,8 @@ def test_heartbeat_updates_last_seen():
 
     bm.register_agent(pwd="/tmp/myproject")
     time.sleep(0.01)
-    result = bm.heartbeat("myproject")
-    assert result["agent_id"] == "myproject"
+    result = bm.heartbeat("myproject:general")
+    assert result["agent_id"] == "myproject:general"
     assert "last_seen" in result
 
 
@@ -176,9 +191,9 @@ def test_send_message_to_registered_agent(set_sender):
 
     bm.register_agent(pwd="/tmp/beta")
     set_sender("alpha")
-    result = bm.send_message(to="beta", content="hello", nudge=False)
+    result = bm.send_message(to="beta:general", content="hello", nudge=False)
     assert result["delivered"] is True
-    assert "beta" in result["recipients"]
+    assert "beta:general" in result["recipients"]
 
 
 def test_send_message_writes_json_file(set_sender):
@@ -187,9 +202,9 @@ def test_send_message_writes_json_file(set_sender):
 
     bm.register_agent(pwd="/tmp/target")
     set_sender("src")
-    bm.send_message(to="target", content="payload", nudge=False)
+    bm.send_message(to="target:general", content="payload", nudge=False)
 
-    inbox = _db_mod.INBOX_DIR / "target"
+    inbox = _db_mod.INBOX_DIR / "target:general"
     files = list(inbox.glob("*.json"))
     assert len(files) == 1
     data = json.loads(files[0].read_text())
@@ -204,9 +219,9 @@ def test_send_message_atomic_write(set_sender):
 
     bm.register_agent(pwd="/tmp/target")
     set_sender("y")
-    bm.send_message(to="target", content="x", nudge=False)
+    bm.send_message(to="target:general", content="x", nudge=False)
 
-    inbox = _db_mod.INBOX_DIR / "target"
+    inbox = _db_mod.INBOX_DIR / "target:general"
     tmp_files = list(inbox.glob("*.tmp"))
     assert tmp_files == []
 
@@ -227,7 +242,7 @@ def test_send_message_broadcast(set_sender):
     bm.register_agent(pwd="/tmp/b")
     set_sender("sender")
     result = bm.send_message(to="*", content="hello all", nudge=False)
-    assert set(result["recipients"]) == {"a", "b"}
+    assert set(result["recipients"]) == {"a:general", "b:general"}
 
 
 def test_get_messages_returns_and_archives(set_sender):
@@ -236,16 +251,16 @@ def test_get_messages_returns_and_archives(set_sender):
 
     bm.register_agent(pwd="/tmp/reader")
     set_sender("w")
-    bm.send_message(to="reader", content="msg1", nudge=False)
-    bm.send_message(to="reader", content="msg2", nudge=False)
+    bm.send_message(to="reader:general", content="msg1", nudge=False)
+    bm.send_message(to="reader:general", content="msg2", nudge=False)
 
-    messages = bm.get_messages("reader")
+    messages = bm.get_messages("reader:general")
     assert len(messages) == 2
     assert messages[0]["content"] == "msg1"
     assert messages[1]["content"] == "msg2"
 
     # Messages archived
-    inbox = _db_mod.INBOX_DIR / "reader"
+    inbox = _db_mod.INBOX_DIR / "reader:general"
     assert list(inbox.glob("*.json")) == []
     assert len(list((inbox / "archive").glob("*.json"))) == 2
 
@@ -254,7 +269,7 @@ def test_get_messages_empty_inbox():
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/empty")
-    messages = bm.get_messages("empty")
+    messages = bm.get_messages("empty:general")
     assert messages == []
 
 
@@ -263,12 +278,12 @@ def test_get_messages_idempotent(set_sender):
 
     bm.register_agent(pwd="/tmp/reader")
     set_sender("w")
-    bm.send_message(to="reader", content="once", nudge=False)
+    bm.send_message(to="reader:general", content="once", nudge=False)
 
-    first = bm.get_messages("reader")
+    first = bm.get_messages("reader:general")
     assert len(first) == 1
 
-    second = bm.get_messages("reader")
+    second = bm.get_messages("reader:general")
     assert second == []
 
 
@@ -361,6 +376,136 @@ def test_register_agent_default_type_is_general():
     agents = bm.list_agents()
     agent = next(a for a in agents if a["agent_id"] == "gen")
     assert agent["agent_type"] == "general"
+
+
+# ── Canonical identity contract (ALP-1786) ────────────────────────────────────
+
+
+def test_canonical_agent_id_shape_without_tmux():
+    """canonical_agent_id() returns {repo}:{agent_type} when no tmux_target."""
+    from server._identity import canonical_agent_id
+
+    assert canonical_agent_id("/tmp/myproject") == "myproject:general"
+    assert (
+        canonical_agent_id("/tmp/myproject", "backend-engineer")
+        == "myproject:backend-engineer"
+    )
+
+
+def test_canonical_agent_id_shape_with_tmux():
+    """canonical_agent_id() returns the 4-segment form when tmux_target is set."""
+    from server._identity import canonical_agent_id
+
+    assert (
+        canonical_agent_id("/tmp/myproject", "general", "7:1.2")
+        == "myproject:general:7:1.2"
+    )
+    assert (
+        canonical_agent_id("/tmp/myproject", "backend-engineer", "7:1.2")
+        == "myproject:backend-engineer:7:1.2"
+    )
+
+
+def test_canonical_agent_id_normalizes_trailing_slash():
+    from server._identity import canonical_agent_id
+
+    assert canonical_agent_id("/tmp/myproject/") == "myproject:general"
+
+
+def test_canonical_agent_id_empty_cwd_becomes_unknown():
+    from server._identity import canonical_agent_id
+
+    assert canonical_agent_id("") == "unknown:general"
+    assert canonical_agent_id("/") == "unknown:general"
+
+
+def test_canonical_agent_id_empty_type_defaults_to_general():
+    """Empty agent_type defaults to 'general' — never produce bare repo."""
+    from server._identity import canonical_agent_id
+
+    assert canonical_agent_id("/tmp/myproject", "") == "myproject:general"
+
+
+def test_register_agent_auto_derivation_matches_canonical_helper():
+    """register_agent() auto-derivation must produce the exact output of
+    canonical_agent_id() for the same inputs. This is the core invariant
+    that prevents MCP-registered rows from diverging from hook-registered
+    rows for the same live process."""
+    import server.bus_server as bm
+    from server._identity import canonical_agent_id
+
+    for pwd, agent_type, tmux_target in [
+        ("/tmp/proj", "general", ""),
+        ("/tmp/proj", "backend-engineer", ""),
+        ("/tmp/proj", "general", "7:1.2"),
+        ("/tmp/proj", "backend-engineer", "main:0.0"),
+        ("/tmp/proj", "voltagent-lang:rust-engineer", "9:3.4"),
+    ]:
+        expected = canonical_agent_id(pwd, agent_type, tmux_target)
+        result = bm.register_agent(
+            pwd=pwd, agent_type=agent_type, tmux_target=tmux_target
+        )
+        assert result["agent_id"] == expected, (
+            f"auto-derive for ({pwd}, {agent_type}, {tmux_target}) "
+            f"produced {result['agent_id']!r}, expected {expected!r}"
+        )
+        bm.unregister_agent(expected)
+
+
+def test_self_agent_id_reads_pid_file(monkeypatch):
+    """Fast path: _self_agent_id() reads the PID file written by the
+    SessionStart hook and returns its contents verbatim. This is how
+    hook-registered identity propagates to MCP self-resolution."""
+    import server._db as _db_mod
+    from server._identity import _self_agent_id
+
+    agent_id = "myproject:backend-engineer:7:1.2"
+    pids_dir = _db_mod.BUS_DIR / "pids"
+    pids_dir.mkdir(parents=True, exist_ok=True)
+    pid = "99999"
+    (pids_dir / pid).write_text(agent_id)
+    monkeypatch.setenv("HELIOY_BUS_CLAUDE_PID", pid)
+
+    assert _self_agent_id() == agent_id
+
+
+def test_self_agent_id_last_resort_uses_canonical_form(monkeypatch, tmp_path):
+    """Last resort: with no PID file and no shell resolver available,
+    _self_agent_id() still produces the canonical 2-segment shape rather
+    than the legacy bare-basename form."""
+    import server._identity as _id_mod
+
+    cwd = tmp_path / "fakeproj"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.delenv("HELIOY_BUS_CLAUDE_PID", raising=False)
+    monkeypatch.delenv("HELIOY_BUS_TMUX", raising=False)
+    monkeypatch.delenv("HELIOY_AGENT_TYPE", raising=False)
+    monkeypatch.delenv("HELIOY_BUS_AGENT_TYPE", raising=False)
+    # Disable the shell resolver so we exercise the Python fallback
+    monkeypatch.setattr(
+        _id_mod, "_RESOLVE_IDENTITY_SH", tmp_path / "does-not-exist.sh"
+    )
+
+    assert _id_mod._self_agent_id() == "fakeproj:general"
+
+
+def test_self_agent_id_last_resort_honors_agent_type_env(monkeypatch, tmp_path):
+    """Last resort honors HELIOY_AGENT_TYPE (hook-exported) so a late-booted
+    MCP server still agrees with the hook-written identity."""
+    import server._identity as _id_mod
+
+    cwd = tmp_path / "myrepo"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.delenv("HELIOY_BUS_CLAUDE_PID", raising=False)
+    monkeypatch.delenv("HELIOY_BUS_TMUX", raising=False)
+    monkeypatch.setenv("HELIOY_AGENT_TYPE", "backend-engineer")
+    monkeypatch.setattr(
+        _id_mod, "_RESOLVE_IDENTITY_SH", tmp_path / "does-not-exist.sh"
+    )
+
+    assert _id_mod._self_agent_id() == "myrepo:backend-engineer"
 
 
 # ── Role-based messaging ─────────────────────────────────────────────────────
@@ -571,24 +716,28 @@ def test_coexistence_of_both_modes(set_sender):
 
 
 def test_adhoc_session_fallback_identity(set_sender):
-    """An ad-hoc claude session (no warroom) registers with basename identity."""
+    """An ad-hoc claude session (no warroom, no tmux) registers with the
+    canonical 2-segment identity: {repo}:{agent_type}. Bare-basename is a
+    legacy shape rejected by the canonical contract (ALP-1786)."""
     import server.bus_server as bm
 
     # Simulate ad-hoc registration as bus-register.sh would derive it
-    bm.register_agent(pwd="/tmp/myproject", agent_id="myproject", agent_type="general")
+    bm.register_agent(pwd="/tmp/myproject", agent_type="general")
 
     agents = bm.list_agents()
     assert len(agents) == 1
     agent = agents[0]
-    assert agent["agent_id"] == "myproject"
+    assert agent["agent_id"] == "myproject:general"
     assert agent["agent_type"] == "general"
 
     # Can receive direct messages
     set_sender("other")
-    result = bm.send_message(to="myproject", content="hello from peer", nudge=False)
+    result = bm.send_message(
+        to="myproject:general", content="hello from peer", nudge=False
+    )
     assert result["delivered"] is True
 
-    bm.unregister_agent("myproject")
+    bm.unregister_agent("myproject:general")
     assert bm.list_agents() == []
 
 

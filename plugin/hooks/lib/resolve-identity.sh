@@ -6,12 +6,14 @@
 #   HELIOY_AGENT_TYPE  — specialist role, e.g. "general", "backend-engineer"
 #   HELIOY_AGENT_REPO  — repository/project name (basename of working directory)
 #
-# Identity format: {repo}:{agent_type}:{session}:{window}.{pane}
+# Canonical identity shape (see server/_identity.py for Python-side contract):
+#   With tmux:    {repo}:{agent_type}:{session}:{window}.{pane}
+#   Without tmux: {repo}:{agent_type}
 # Examples:
 #   Pane-title (warroom/crew):  fmm:general:7:2.1          (unnamed session)
 #   Pane-title (named session): fmm:general:helioy:2.1     (named session)
 #   Pane-title (role-mode):     helioy-bus:backend-engineer:7:3.1
-#   Fallback (ad-hoc, no tmux): myproject
+#   Fallback (ad-hoc, no tmux): myproject:general
 #   Fallback (ad-hoc, tmux):    myproject:general:7:2.1
 
 # Validation regex: repo:type[:subtype]:session:window.pane
@@ -141,10 +143,12 @@ resolve_agent_id() {
     # HELIOY_BUS_AGENT_TYPE overrides the default "general" in fallback mode only.
     HELIOY_AGENT_TYPE="${HELIOY_BUS_AGENT_TYPE:-general}"
 
+    # Canonical 2-segment form when no tmux target. Never bare basename:
+    # that legacy shape diverged from register_agent() and _self_agent_id().
     if [[ -n "$tmux_target" ]]; then
         HELIOY_AGENT_ID="${repo}:${HELIOY_AGENT_TYPE}:${tmux_target}"
     else
-        HELIOY_AGENT_ID="$repo"
+        HELIOY_AGENT_ID="${repo}:${HELIOY_AGENT_TYPE}"
     fi
 
     export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO
