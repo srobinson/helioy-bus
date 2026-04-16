@@ -156,31 +156,19 @@ def test_warroom_spawn_rejects_agent_not_in_selected_runtime(
     assert details and details[0]["agent"] == "codex:agent-browser"
 
 
-def test_warroom_spawn_accepts_agent_from_selected_runtime(
-    fake_plugins, fake_codex_skills, monkeypatch
+def test_resolve_agent_type_scopes_to_codex_catalogue(
+    fake_plugins, fake_codex_skills
 ):
-    """The mirror case: runtime='codex' with a Codex skill resolves correctly."""
-    import server._tmux as tmux_mod
-    import server.services.warroom as warroom_service
+    """The mirror of ``_resolve_agent_type`` scoping to Codex-only skills.
 
-    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
-    monkeypatch.setattr(
-        tmux_mod.gateway, "spawn_pane",
-        lambda **kw: {
-            "agent_type": "agent-browser",
-            "qualified_name": "codex:agent-browser",
-            "tmux_target": "alp:1.0",
-            "pane_id": "%1",
-            "runtime": kw.get("runtime"),
-        },
-    )
-    monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
+    ALP-1796 bars codex-specialist spawn at the service boundary, so
+    this check drops below the service layer and asserts the underlying
+    scoping mechanism directly: ``_resolve_agent_type(name, 'codex')``
+    with a Codex-only skill name returns a Codex-tagged descriptor.
+    """
+    import server._warroom as wr
 
-    result = warroom_service.spawn(
-        name="codex-ok",
-        agents=["agent-browser"],
-        cwd="/tmp/r",
-        runtime="codex",
-    )
-    assert "error" not in result, result
-    assert result["members"][0]["qualified_name"] == "codex:agent-browser"
+    agent = wr._resolve_agent_type("agent-browser", "codex")
+    assert agent is not None
+    assert agent["qualified_name"] == "codex:agent-browser"
+    assert agent["runtime"] == "codex"

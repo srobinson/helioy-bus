@@ -17,6 +17,10 @@ class ClaudeRuntimeAdapter:
     runtime_id = "claude"
     self_pid_env = "HELIOY_BUS_CLAUDE_PID"
 
+    # Claude enacts a specialist persona via ``--agent <qualified-name>``,
+    # so the session really is bound to that role from launch onward.
+    supports_specialist_roles = True
+
     _BASE_CMD = "claude --dangerously-skip-permissions --model opus --effort max"
 
     def build_launch_command(self, *, qualified_name: str | None) -> str:

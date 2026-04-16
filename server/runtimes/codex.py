@@ -27,6 +27,13 @@ class CodexRuntimeAdapter:
     runtime_id = "codex"
     self_pid_env = "HELIOY_BUS_CODEX_PID"
 
+    # Codex has no persona CLI flag; skills are activated per-turn via
+    # slash commands, not bound to the session at launch. A "specialist
+    # role" in a warroom would persist state the runtime never enacts,
+    # so we reject such spawns at the service layer. Codex is usable in
+    # general/repo mode via warroom_spawn_repos.
+    supports_specialist_roles = False
+
     # Codex does not layer a plugin/version directory under its skills
     # cache, so all discovered skills share a single namespace.
     _NAMESPACE = "codex"

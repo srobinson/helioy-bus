@@ -20,11 +20,27 @@ class RuntimeAdapter(Protocol):
     Responsibilities (from the multi-runtime architecture spec):
       * launch command construction
       * identity bootstrap (env var names)
-      * runtime capability metadata (agent cache dir, runtime id)
+      * runtime capability metadata (agent cache dir, runtime id,
+        specialist-role support)
       * agent/skill catalogue discovery
     """
 
     runtime_id: str
+    supports_specialist_roles: bool
+    """Whether this runtime enacts a specialist role at launch time.
+
+    ``True`` when the runtime exposes a CLI mechanism (e.g. Claude's
+    ``--agent <qualified-name>`` flag) that actually binds the session
+    to a persona. ``False`` for runtimes whose skill/agent system is
+    contextual per-turn (e.g. Codex skills activated via slash command),
+    where claiming a specialist role at spawn time would persist state
+    that the runtime does not enact.
+
+    ``services/warroom.spawn`` and ``add`` check this flag and reject
+    specialist-role spawns for runtimes that return ``False``. Such
+    runtimes can still be used via ``warroom_spawn_repos`` in
+    general/repo mode.
+    """
 
     def build_launch_command(self, *, qualified_name: str | None) -> str:
         """Return the shell command that launches a pane for this runtime.

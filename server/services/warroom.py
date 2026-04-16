@@ -17,7 +17,12 @@ from pathlib import Path
 from server import _db
 from server._tmux import gateway
 from server._warroom import _resolve_agent_type, _scan_agent_types
-from server.runtimes import default_adapter, for_id, registered_adapters
+from server.runtimes import (
+    RuntimeAdapter,
+    default_adapter,
+    for_id,
+    registered_adapters,
+)
 
 VALID_LAYOUTS = {
     "tiled", "even-horizontal", "even-vertical",
@@ -79,24 +84,48 @@ def _build_suggestions(needle: str, all_types: list[dict], limit: int = 5) -> li
     ][:limit]
 
 
-def _resolve_runtime(runtime: str) -> tuple[str, dict | None]:
+def _resolve_runtime(runtime: str) -> tuple[RuntimeAdapter | None, dict | None]:
     """Normalize and validate a user-supplied runtime id.
 
-    Empty string falls back to the default adapter's runtime_id without
-    re-validation (the default is registered by construction). A
-    non-empty runtime is validated against the registry. Returns
-    ``(runtime_id, None)`` on success or ``("", error_dict)`` when the
-    requested runtime is not registered, matching the service's error
-    convention.
+    Empty string falls back to the default adapter without re-validation
+    (the default is registered by construction). A non-empty runtime is
+    validated against the registry. Returns ``(adapter, None)`` on
+    success or ``(None, error_dict)`` when the requested runtime is not
+    registered. Returning the adapter (not just the id) lets callers
+    reach capability flags like ``supports_specialist_roles`` without
+    a second registry lookup.
     """
     if not runtime:
-        return default_adapter().runtime_id, None
+        return default_adapter(), None
     try:
-        for_id(runtime)
+        adapter = for_id(runtime)
     except KeyError:
         known = sorted(a.runtime_id for a in registered_adapters())
-        return "", {"error": f"Unknown runtime {runtime!r}. Known: {known}"}
-    return runtime, None
+        return None, {"error": f"Unknown runtime {runtime!r}. Known: {known}"}
+    return adapter, None
+
+
+def _require_specialist_support(adapter: RuntimeAdapter) -> dict | None:
+    """Return an error dict when the runtime cannot enact specialist roles.
+
+    warroom.spawn and add both spawn panes keyed to a specialist
+    qualified_name. A runtime whose ``supports_specialist_roles`` is
+    ``False`` (e.g. Codex, whose skills are per-turn slash commands,
+    not a session-wide persona) would persist role state the runtime
+    never actually enacts. Reject such spawns rather than lie about
+    the member's role. Returns ``None`` when the runtime is
+    specialist-capable.
+    """
+    if adapter.supports_specialist_roles:
+        return None
+    return {
+        "error": (
+            f"Runtime {adapter.runtime_id!r} does not support specialist-role "
+            f"spawn. Skills are activated per-turn, not bound to the "
+            f"session. Use warroom_spawn_repos for general-mode "
+            f"{adapter.runtime_id} panes."
+        ),
+    }
 
 
 # ── Service operations ────────────────────────────────────────────────────────
@@ -116,10 +145,11 @@ def discover(
     Unknown runtime ids return a helpful error listing the registered ids.
     """
     if runtime:
-        runtime_id, err = _resolve_runtime(runtime)
+        adapter, err = _resolve_runtime(runtime)
         if err:
             return err
-        all_types = _scan_agent_types(runtime_id)
+        assert adapter is not None
+        all_types = _scan_agent_types(adapter.runtime_id)
     else:
         all_types = _scan_agent_types()
     all_namespaces = sorted({a["namespace"] for a in all_types})
@@ -157,9 +187,11 @@ def spawn_repos(
     if session is None:
         return {"error": "Cannot determine tmux session"}
 
-    runtime_id, err = _resolve_runtime(runtime)
+    adapter, err = _resolve_runtime(runtime)
     if err:
         return err
+    assert adapter is not None
+    runtime_id = adapter.runtime_id
 
     base = Path(os.environ.get("HELIOY_BASE", Path.home() / "Dev/LLM/DEV/helioy"))
     if not base.is_dir():
@@ -254,9 +286,13 @@ def spawn(
     if session is None:
         return {"error": "Cannot determine tmux session"}
 
-    runtime_id, err = _resolve_runtime(runtime)
+    adapter, err = _resolve_runtime(runtime)
     if err:
         return err
+    assert adapter is not None
+    if cap_err := _require_specialist_support(adapter):
+        return cap_err
+    runtime_id = adapter.runtime_id
 
     if not cwd:
         cwd = os.getcwd()
@@ -427,9 +463,13 @@ def status(*, name: str = "") -> list[dict]:
 
 
 def add(*, name: str, agent: str, cwd: str = "", runtime: str = "") -> dict:
-    runtime_id, err = _resolve_runtime(runtime)
+    adapter, err = _resolve_runtime(runtime)
     if err:
         return err
+    assert adapter is not None
+    if cap_err := _require_specialist_support(adapter):
+        return cap_err
+    runtime_id = adapter.runtime_id
 
     agent_def = _resolve_agent_type(agent, runtime_id)
     if not agent_def:
