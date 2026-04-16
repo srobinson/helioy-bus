@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 WATCH_DIR = Path(__file__).parent
@@ -31,6 +32,26 @@ PYTHON = sys.executable
 
 def _log(msg: str) -> None:
     print(f"[helioy-bus proxy] {msg}", file=sys.stderr, flush=True)
+
+
+def build_inner_env(environ: Mapping[str, str], parent_pid: int) -> dict[str, str]:
+    """Build the env for the inner server, setting the active runtime's
+    self_pid_env only when no upstream wrapper has done so.
+
+    When a wrapper (e.g. ``codex-launch.sh``) has already exported its
+    runtime's PID env, preserve it. When nothing upstream has, fall back
+    to the default adapter and seed its env var with the parent PID —
+    the historical Claude-only path.
+    """
+    from server.runtimes import default_adapter, registered_adapters
+
+    active = next(
+        (a for a in registered_adapters() if a.self_pid_env in environ),
+        default_adapter(),
+    )
+    env = dict(environ)
+    env.setdefault(active.self_pid_env, str(parent_pid))
+    return env
 
 
 class HotReloadProxy:
@@ -46,8 +67,7 @@ class HotReloadProxy:
     async def _spawn(self) -> None:
         import os
 
-        from server.runtimes import default_adapter
-        env = {**os.environ, default_adapter().self_pid_env: str(os.getppid())}
+        env = build_inner_env(os.environ, os.getppid())
         self.proc = await asyncio.create_subprocess_exec(
             PYTHON, str(self.server_script),
             stdin=asyncio.subprocess.PIPE,

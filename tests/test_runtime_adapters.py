@@ -268,10 +268,15 @@ def test_codex_adapter_is_distinct_class_from_claude():
 # ── Codex adapter: launch command ────────────────────────────────────────────
 
 
-def test_codex_build_launch_command_uses_bypass_flag():
+def test_codex_build_launch_command_points_at_launch_wrapper():
+    """Codex launch goes through codex-launch.sh so the pane auto-registers."""
     cmd = CODEX.build_launch_command(qualified_name=None)
-    assert cmd.startswith("codex ")
-    assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+    wrapper = Path(cmd)
+    assert wrapper.name == "codex-launch.sh"
+    assert wrapper.exists(), f"wrapper missing: {wrapper}"
+    # Wrapper drives codex with the bypass flag internally.
+    content = wrapper.read_text()
+    assert "codex --dangerously-bypass-approvals-and-sandbox" in content
 
 
 def test_codex_build_launch_command_ignores_qualified_name():
@@ -324,7 +329,8 @@ def test_spawn_pane_uses_for_id_when_runtime_specified(monkeypatch):
 
     send_keys_calls = [c for c in call_log if c[0] == "send-keys"]
     assert send_keys_calls, "spawn_pane did not issue send-keys"
-    assert "codex --dangerously-bypass-approvals-and-sandbox" in send_keys_calls[0]
+    # Codex adapter now launches through the bus-registering wrapper.
+    assert any("codex-launch.sh" in arg for arg in send_keys_calls[0])
     assert result["runtime"] == "codex"
 
 
@@ -543,3 +549,37 @@ def test_self_agent_id_resolves_via_codex_pid_env(tmp_path, monkeypatch):
 
     resolved = identity_mod._self_agent_id()
     assert resolved == "codex-repo:general:2.0"
+
+
+# ── Proxy: runtime-aware env seeding ─────────────────────────────────────────
+
+
+def test_proxy_build_inner_env_seeds_default_when_no_runtime_env_set():
+    """With no upstream wrapper, proxy sets the default adapter's PID env."""
+    from server.proxy import build_inner_env
+
+    env = build_inner_env({}, parent_pid=1234)
+    # Default is Claude while it remains the incumbent.
+    assert env[CLAUDE.self_pid_env] == "1234"
+    assert CODEX.self_pid_env not in env
+
+
+def test_proxy_build_inner_env_preserves_upstream_codex_pid():
+    """When codex-launch.sh has set HELIOY_BUS_CODEX_PID, proxy preserves it
+    and does not overwrite HELIOY_BUS_CLAUDE_PID with the spurious
+    parent PID of a Codex-hosted MCP subprocess.
+    """
+    from server.proxy import build_inner_env
+
+    env = build_inner_env({CODEX.self_pid_env: "5000"}, parent_pid=6000)
+    assert env[CODEX.self_pid_env] == "5000"
+    # Proxy must NOT set Claude's env for a Codex session.
+    assert CLAUDE.self_pid_env not in env
+
+
+def test_proxy_build_inner_env_preserves_upstream_claude_pid():
+    """An already-set Claude PID env is not overwritten with a later ppid."""
+    from server.proxy import build_inner_env
+
+    env = build_inner_env({CLAUDE.self_pid_env: "2000"}, parent_pid=9999)
+    assert env[CLAUDE.self_pid_env] == "2000"

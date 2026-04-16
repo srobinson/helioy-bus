@@ -18,6 +18,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-register.sh"
 UNREGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-unregister.sh"
+CODEX_LAUNCH = REPO_ROOT / "plugin" / "hooks" / "codex-launch.sh"
 RESOLVE_IDENTITY_TESTS = REPO_ROOT / "tests" / "test_resolve_identity.sh"
 
 SMOKE_PROJECT_DIR = "/tmp/helioy-shell-hooks-repo"
@@ -169,3 +170,153 @@ def test_bus_register_evicts_stale_tmux_target(isolated_bus):
     assert len(rows) == 1
     assert rows[0][0] == f"{SMOKE_AGENT_ID}:{stale_target}"
     assert rows[0][0] != "stale:agent:fake-session:0.0"
+
+
+# ── codex-launch.sh: register + unregister lifecycle ─────────────────────────
+
+
+def _install_codex_stub(tmp_dir: Path, marker: Path) -> Path:
+    """Write a fake codex on PATH that records invocation and exits clean.
+
+    Returns the directory to prepend to PATH. Codex receives
+    --dangerously-bypass-approvals-and-sandbox; the stub ignores args.
+    """
+    stub_dir = tmp_dir / "stub-bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "codex"
+    stub.write_text(f"#!/bin/sh\necho codex-ran > {marker}\nexit 0\n")
+    stub.chmod(0o755)
+    return stub_dir
+
+
+def test_codex_launch_wrapper_registers_unregisters_and_runs_codex(
+    isolated_bus, tmp_path
+):
+    """End-to-end: wrapper registers agent, runs codex, unregisters on exit."""
+    marker = tmp_path / "codex-ran.log"
+    stub_dir = _install_codex_stub(tmp_path, marker)
+
+    env = _hook_env(isolated_bus)
+    # Prepend the stub dir so `codex` in the wrapper resolves to our fake.
+    env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(CODEX_LAUNCH)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"wrapper failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+    # Stub codex actually ran.
+    assert marker.exists(), "wrapper did not invoke codex"
+
+    # Unregister trap fired on clean exit: agent row is gone.
+    conn = sqlite3.connect(isolated_bus / "registry.db")
+    try:
+        (count,) = conn.execute("SELECT COUNT(*) FROM agents").fetchone()
+    finally:
+        conn.close()
+    assert count == 0, "unregister trap did not remove the agent row"
+
+
+def test_codex_launch_wrapper_records_codex_agent_type_in_registry(
+    isolated_bus, tmp_path
+):
+    """During the codex session the agent row carries agent_type=general
+    and the PID file matches the wrapper PID (so self-identity resolves).
+    The stub codex pauses so we can inspect the registry mid-flight.
+    """
+    ready = tmp_path / "codex-ready"
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "codex"
+    # Signal ready, then wait for a sentinel file before exiting.
+    stub.write_text(
+        "#!/bin/sh\n"
+        f"touch {ready}\n"
+        f"while [ ! -f {tmp_path}/codex-done ]; do sleep 0.05; done\n"
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+
+    env = _hook_env(isolated_bus)
+    env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+
+    proc = subprocess.Popen(
+        ["bash", str(CODEX_LAUNCH)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        # Wait for the stub to signal ready (wrapper has finished register).
+        deadline = 5.0
+        import time as _t
+        while not ready.exists() and deadline > 0:
+            _t.sleep(0.05)
+            deadline -= 0.05
+        assert ready.exists(), "codex stub never started"
+
+        # Agent row exists with agent_type=general.
+        conn = sqlite3.connect(isolated_bus / "registry.db")
+        try:
+            rows = conn.execute(
+                "SELECT agent_id, pid, agent_type FROM agents"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 1, f"expected one agent row, got {rows}"
+        agent_id, pid, agent_type = rows[0]
+        assert agent_id == SMOKE_AGENT_ID
+        assert agent_type == "general"
+        # PID file exists at pids/<wrapper_pid> with agent_id contents.
+        pid_file = isolated_bus / "pids" / str(pid)
+        assert pid_file.exists(), f"PID file missing at {pid_file}"
+        assert pid_file.read_text().strip() == SMOKE_AGENT_ID
+    finally:
+        (tmp_path / "codex-done").touch()
+        proc.wait(timeout=5)
+
+    # Clean exit → unregister trap removed the row.
+    assert proc.returncode == 0
+    conn = sqlite3.connect(isolated_bus / "registry.db")
+    try:
+        (count,) = conn.execute("SELECT COUNT(*) FROM agents").fetchone()
+    finally:
+        conn.close()
+    assert count == 0
+
+
+def test_codex_launch_wrapper_cleans_up_when_codex_fails(
+    isolated_bus, tmp_path
+):
+    """If codex exits non-zero, the EXIT trap still runs unregister."""
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "codex"
+    stub.write_text("#!/bin/sh\nexit 42\n")
+    stub.chmod(0o755)
+
+    env = _hook_env(isolated_bus)
+    env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(CODEX_LAUNCH)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # Wrapper propagates codex's exit status via `set -e`.
+    assert result.returncode == 42, result.stderr
+
+    conn = sqlite3.connect(isolated_bus / "registry.db")
+    try:
+        (count,) = conn.execute("SELECT COUNT(*) FROM agents").fetchone()
+    finally:
+        conn.close()
+    assert count == 0, "unregister trap must fire even on codex failure"
