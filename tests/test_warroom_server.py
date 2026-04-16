@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 import server._db as _db_mod
 
 # Tests patch the tmux gateway singleton directly. warroom_server no
@@ -261,6 +263,34 @@ def test_warroom_schema_created():
         table_names = {r["name"] for r in tables}
         assert "warrooms" in table_names
         assert "warroom_members" in table_names
+
+
+def test_warroom_members_runtime_is_required():
+    """No runtime privilege in the core model: a member row must name its runtime.
+
+    A missing ``runtime`` used to default to ``'claude'``, which silently
+    made Codex members register as Claude. Inserting without runtime must
+    now raise so the mis-registration cannot happen.
+    """
+    import sqlite3
+
+    from server._db import _new_member_id, _now, db
+
+    now = _now()
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, "
+            "created_at, status) VALUES (?, ?, ?, ?, ?, 'active')",
+            ("t", "s", "w", "/tmp", now),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO warroom_members "
+                "(warroom_member_id, warroom_id, role, spawn_order, "
+                " tmux_target, pane_id, spawned_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (_new_member_id(), "t", "general", 0, "s:1.0", "%1", now),
+            )
 
 
 # ── Warroom: warroom_spawn (mocked tmux) ─────────────────────────────────────

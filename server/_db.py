@@ -67,7 +67,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS warroom_members (
             warroom_member_id TEXT PRIMARY KEY,
             warroom_id        TEXT NOT NULL REFERENCES warrooms(warroom_id) ON DELETE CASCADE,
-            runtime           TEXT NOT NULL DEFAULT 'claude',
+            runtime           TEXT NOT NULL,
             role              TEXT NOT NULL,
             repo              TEXT,
             spawn_order       INTEGER NOT NULL,
@@ -117,7 +117,7 @@ def _migrate_warroom_members(conn: sqlite3.Connection) -> None:
         CREATE TABLE warroom_members (
             warroom_member_id TEXT PRIMARY KEY,
             warroom_id        TEXT NOT NULL REFERENCES warrooms(warroom_id) ON DELETE CASCADE,
-            runtime           TEXT NOT NULL DEFAULT 'claude',
+            runtime           TEXT NOT NULL,
             role              TEXT NOT NULL,
             repo              TEXT,
             spawn_order       INTEGER NOT NULL,

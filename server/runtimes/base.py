@@ -66,7 +66,13 @@ def for_id(runtime_id: str) -> RuntimeAdapter:
 
 
 def default_adapter() -> RuntimeAdapter:
-    """Return the default runtime adapter (Claude while it is the incumbent)."""
+    """Return the default runtime adapter.
+
+    The default is selected at registration time (see :func:`register`)
+    and is not tied to any specific runtime. Shared core code should
+    prefer :func:`for_id` when the caller has a runtime id in hand and
+    fall back to the default only when no runtime is specified.
+    """
     if _default_id is None:
         raise RuntimeError("No runtime adapter registered")
     return _adapters[_default_id]
