@@ -10,7 +10,6 @@
 set -euo pipefail
 
 BUS_DIR="${HELIOY_BUS_DIR:-$HOME/.helioy/bus}"
-DB_PATH="$BUS_DIR/registry.db"
 INBOX_BASE="$BUS_DIR/inbox"
 
 # Resolve identity via shared lib (pane-title-first, then basename fallback).
