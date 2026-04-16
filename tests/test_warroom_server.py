@@ -432,6 +432,23 @@ def test_warroom_spawn_repos_includes_messaging_guidance(monkeypatch, tmp_path):
 # ── Warroom: warroom_kill ────────────────────────────────────────────────────
 
 
+def _insert_member(conn, *, warroom_id, role, tmux_target, pane_id, now,
+                   member_id=None, spawn_order=0, repo=None, runtime="claude"):
+    """Test helper: insert a warroom_members row using the new schema."""
+    from server._db import _new_member_id
+
+    member_id = member_id or _new_member_id()
+    conn.execute(
+        "INSERT INTO warroom_members "
+        "(warroom_member_id, warroom_id, runtime, role, repo, spawn_order, "
+        " tmux_target, pane_id, spawned_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (member_id, warroom_id, runtime, role, repo, spawn_order,
+         tmux_target, pane_id, now),
+    )
+    return member_id
+
+
 def test_warroom_kill_removes_from_db(monkeypatch):
     """Kill removes warroom and members from the database."""
     from server._db import _now, db
@@ -447,11 +464,9 @@ def test_warroom_kill_removes_from_db(monkeypatch):
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("test-wr", "main", "test-wr", "/tmp", now, "active"),
         )
-        conn.execute(
-            "INSERT INTO warroom_members "
-            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("test-wr", "helioy-tools:backend-engineer", "main:1.0", "%10", now),
+        _insert_member(
+            conn, warroom_id="test-wr", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.0", pane_id="%10", now=now,
         )
 
     result = wm.warroom_kill(name="test-wr")
@@ -491,13 +506,10 @@ def test_warroom_status_cross_references_agents(monkeypatch):
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("status-wr", "main", "status-wr", "/tmp", now, "active"),
         )
-        conn.execute(
-            "INSERT INTO warroom_members "
-            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("status-wr", "helioy-tools:backend-engineer", "main:2.0", "%20", now),
+        member_id = _insert_member(
+            conn, warroom_id="status-wr", role="helioy-tools:backend-engineer",
+            tmux_target="main:2.0", pane_id="%20", now=now,
         )
-        # Register a matching agent
         conn.execute(
             "INSERT INTO agents "
             "(agent_id, cwd, tmux_target, pid, registered_at, last_seen) "
@@ -516,6 +528,11 @@ def test_warroom_status_cross_references_agents(monkeypatch):
     assert member["registered"] is True
     assert member["pane_alive"] is True
     assert member["agent_id"] == "project:helioy-tools:backend-engineer:main:2.0"
+    assert member["warroom_member_id"] == member_id
+    assert member["role"] == "helioy-tools:backend-engineer"
+    assert member["runtime"] == "claude"
+    assert member["repo"] is None
+    assert member["spawn_order"] == 0
 
 
 # ── Warroom: warroom_add ─────────────────────────────────────────────────────
@@ -536,11 +553,9 @@ def test_warroom_add_to_existing(fake_plugins, monkeypatch):
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("add-test", "main", "add-test", "/tmp/project", now, "active"),
         )
-        conn.execute(
-            "INSERT INTO warroom_members "
-            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("add-test", "helioy-tools:backend-engineer", "main:1.0", "%10", now),
+        _insert_member(
+            conn, warroom_id="add-test", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.0", pane_id="%10", now=now,
         )
 
     monkeypatch.setattr(wm, "_spawn_pane", lambda **kw: {
@@ -553,11 +568,14 @@ def test_warroom_add_to_existing(fake_plugins, monkeypatch):
     result = wm.warroom_add(name="add-test", agent="frontend-engineer")
     assert result["warroom_id"] == "add-test"
     assert result["added"]["qualified_name"] == "helioy-tools:frontend-engineer"
+    assert result["added"]["role"] == "helioy-tools:frontend-engineer"
+    assert "warroom_member_id" in result["added"]
+    assert result["added"]["spawn_order"] == 1
     assert result["member_count"] == 2
 
 
-def test_warroom_add_duplicate_rejected(fake_plugins, monkeypatch):
-    """Adding a duplicate agent type returns an error."""
+def test_warroom_add_allows_duplicate_role(fake_plugins, monkeypatch):
+    """Adding the same role twice creates a second distinct member."""
     from server._db import _now, db
 
     import server.warroom_server as wm
@@ -570,16 +588,40 @@ def test_warroom_add_duplicate_rejected(fake_plugins, monkeypatch):
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("dup-test", "main", "dup-test", "/tmp/project", now, "active"),
         )
-        conn.execute(
-            "INSERT INTO warroom_members "
-            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("dup-test", "helioy-tools:backend-engineer", "main:1.0", "%10", now),
+        first_id = _insert_member(
+            conn, warroom_id="dup-test", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.0", pane_id="%10", now=now, spawn_order=0,
         )
 
+    pane_counter = [1]
+
+    def mock_spawn_pane(**kw):
+        idx = pane_counter[0]
+        pane_counter[0] += 1
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": f"main:1.{idx}",
+            "pane_id": f"%1{idx}",
+        }
+
+    monkeypatch.setattr(wm, "_spawn_pane", mock_spawn_pane)
+
     result = wm.warroom_add(name="dup-test", agent="backend-engineer")
-    assert "error" in result
-    assert "already" in result["error"].lower()
+    assert "error" not in result
+    assert result["member_count"] == 2
+    assert result["added"]["warroom_member_id"] != first_id
+    assert result["added"]["spawn_order"] == 1
+
+    with db() as conn:
+        roles = conn.execute(
+            "SELECT role, spawn_order FROM warroom_members WHERE warroom_id = ? ORDER BY spawn_order",
+            ("dup-test",),
+        ).fetchall()
+        assert len(roles) == 2
+        assert roles[0]["role"] == roles[1]["role"]
+        assert roles[0]["spawn_order"] == 0
+        assert roles[1]["spawn_order"] == 1
 
 
 def test_warroom_add_nonexistent_warroom(fake_plugins):
@@ -615,7 +657,7 @@ def test_warroom_add_unknown_agent_type(fake_plugins, monkeypatch):
 
 
 def test_warroom_remove_agent(fake_plugins, monkeypatch):
-    """Remove an agent from a warroom."""
+    """Remove an agent from a warroom by role name."""
     from server._db import _now, db
 
     import server.warroom_server as wm
@@ -628,24 +670,86 @@ def test_warroom_remove_agent(fake_plugins, monkeypatch):
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("rm-test", "main", "rm-test", "/tmp", now, "active"),
         )
-        conn.execute(
-            "INSERT INTO warroom_members "
-            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("rm-test", "helioy-tools:backend-engineer", "main:1.0", "%10", now),
+        be_id = _insert_member(
+            conn, warroom_id="rm-test", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.0", pane_id="%10", now=now, spawn_order=0,
         )
-        conn.execute(
-            "INSERT INTO warroom_members "
-            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("rm-test", "helioy-tools:frontend-engineer", "main:1.1", "%11", now),
+        _insert_member(
+            conn, warroom_id="rm-test", role="helioy-tools:frontend-engineer",
+            tmux_target="main:1.1", pane_id="%11", now=now, spawn_order=1,
         )
 
     result = wm.warroom_remove(name="rm-test", agent="backend-engineer")
     assert result["warroom_id"] == "rm-test"
-    assert result["removed"] == "helioy-tools:backend-engineer"
+    assert result["removed"]["role"] == "helioy-tools:backend-engineer"
+    assert result["removed"]["warroom_member_id"] == be_id
     assert result["remaining_members"] == 1
     assert result["warroom_killed"] is False
+
+
+def test_warroom_remove_by_member_id(fake_plugins, monkeypatch):
+    """Remove targets the exact stable member_id when provided."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("rm-id", "main", "rm-id", "/tmp", now, "active"),
+        )
+        first_id = _insert_member(
+            conn, warroom_id="rm-id", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.0", pane_id="%10", now=now, spawn_order=0,
+        )
+        second_id = _insert_member(
+            conn, warroom_id="rm-id", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.1", pane_id="%11", now=now, spawn_order=1,
+        )
+
+    result = wm.warroom_remove(name="rm-id", member_id=second_id)
+    assert "error" not in result
+    assert result["removed"]["warroom_member_id"] == second_id
+    assert result["remaining_members"] == 1
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT warroom_member_id FROM warroom_members WHERE warroom_id = 'rm-id'"
+        ).fetchall()
+        assert [r["warroom_member_id"] for r in rows] == [first_id]
+
+
+def test_warroom_remove_ambiguous_role_returns_candidates(fake_plugins, monkeypatch):
+    """Removing by role when multiple members share it returns candidate ids."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("amb", "main", "amb", "/tmp", now, "active"),
+        )
+        a_id = _insert_member(
+            conn, warroom_id="amb", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.0", pane_id="%10", now=now, spawn_order=0,
+        )
+        b_id = _insert_member(
+            conn, warroom_id="amb", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.1", pane_id="%11", now=now, spawn_order=1,
+        )
+
+    result = wm.warroom_remove(name="amb", agent="backend-engineer")
+    assert "error" in result
+    assert "ambiguous" in result["error"].lower()
+    candidate_ids = {c["warroom_member_id"] for c in result["candidates"]}
+    assert candidate_ids == {a_id, b_id}
 
 
 def test_warroom_remove_last_agent_kills_warroom(fake_plugins, monkeypatch):
@@ -662,11 +766,9 @@ def test_warroom_remove_last_agent_kills_warroom(fake_plugins, monkeypatch):
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("last-test", "main", "last-test", "/tmp", now, "active"),
         )
-        conn.execute(
-            "INSERT INTO warroom_members "
-            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("last-test", "helioy-tools:backend-engineer", "main:1.0", "%10", now),
+        _insert_member(
+            conn, warroom_id="last-test", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.0", pane_id="%10", now=now,
         )
 
     result = wm.warroom_remove(name="last-test", agent="backend-engineer")
@@ -744,7 +846,7 @@ def test_warroom_spawn_idempotent_replaces_existing(fake_plugins, monkeypatch):
             "SELECT * FROM warroom_members WHERE warroom_id = 'idem-test'"
         ).fetchall()
         assert len(members) == 1
-        assert members[0]["agent_type"] == "helioy-tools:frontend-engineer"
+        assert members[0]["role"] == "helioy-tools:frontend-engineer"
 
 
 # ── Warroom: spawn pane command line ─────────────────────────────────────────
@@ -835,11 +937,9 @@ def test_warroom_status_includes_token_usage(monkeypatch):
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("token-wr", "main", "token-wr", "/tmp", now, "active"),
         )
-        conn.execute(
-            "INSERT INTO warroom_members "
-            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("token-wr", "helioy-tools:backend-engineer", "main:3.0", "%30", now),
+        _insert_member(
+            conn, warroom_id="token-wr", role="helioy-tools:backend-engineer",
+            tmux_target="main:3.0", pane_id="%30", now=now,
         )
         conn.execute(
             "INSERT INTO agents "
@@ -855,3 +955,134 @@ def test_warroom_status_includes_token_usage(monkeypatch):
     assert isinstance(member["token_usage"], dict)
     assert member["token_usage"]["tokens"] == 85000
     assert member["token_usage"]["updated"] == "2026-03-17T08:17:51Z"
+
+
+# ── Warroom: repo mode creates distinct members ──────────────────────────────
+
+
+def test_warroom_spawn_repos_creates_distinct_members_per_repo(monkeypatch, tmp_path):
+    """Repo mode persists one stable member per repo with role='general' and repo set."""
+    import server.warroom_server as wm
+    from server._db import db
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+    monkeypatch.setattr(wm, "_tmux_check", lambda *a: "main")
+
+    for name in ("repo-a", "repo-b", "repo-c"):
+        repo = tmp_path / name
+        repo.mkdir()
+        (repo / ".git").mkdir()
+    monkeypatch.setenv("HELIOY_BASE", str(tmp_path))
+
+    pane_counter = [0]
+
+    def mock_spawn_pane(**kw):
+        idx = pane_counter[0]
+        pane_counter[0] += 1
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw.get("qualified_name"),
+            "tmux_target": f"main:1.{idx}",
+            "pane_id": f"%{idx}",
+        }
+
+    monkeypatch.setattr(wm, "_spawn_pane", mock_spawn_pane)
+
+    result = wm.warroom_spawn_repos(window="repo-wr")
+    assert "errors" not in result
+    assert len(result["members"]) == 3
+    repos = [m["repo"] for m in result["members"]]
+    assert sorted(repos) == ["repo-a", "repo-b", "repo-c"]
+    member_ids = {m["warroom_member_id"] for m in result["members"]}
+    assert len(member_ids) == 3
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT warroom_member_id, role, repo, spawn_order FROM warroom_members "
+            "WHERE warroom_id = ? ORDER BY spawn_order",
+            ("repo-wr",),
+        ).fetchall()
+        assert len(rows) == 3
+        assert all(r["role"] == "general" for r in rows)
+        assert [r["repo"] for r in rows] == ["repo-a", "repo-b", "repo-c"]
+        assert [r["spawn_order"] for r in rows] == [0, 1, 2]
+        assert len({r["warroom_member_id"] for r in rows}) == 3
+
+
+# ── Warroom: legacy schema migration ─────────────────────────────────────────
+
+
+def test_warroom_members_legacy_schema_migrates():
+    """Legacy (warroom_id, agent_type) PK rows are rebuilt with stable member ids."""
+    import sqlite3
+
+    import server._db as _db_mod
+    from server._db import REGISTRY_DB, _now, db
+
+    # Build a legacy-shape DB without going through _init_db
+    REGISTRY_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(REGISTRY_DB))
+    conn.executescript("""
+        CREATE TABLE warrooms (
+            warroom_id   TEXT PRIMARY KEY,
+            tmux_session TEXT NOT NULL,
+            tmux_window  TEXT NOT NULL,
+            cwd          TEXT NOT NULL,
+            created_at   TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'active'
+        );
+        CREATE TABLE warroom_members (
+            warroom_id   TEXT NOT NULL REFERENCES warrooms(warroom_id) ON DELETE CASCADE,
+            agent_type   TEXT NOT NULL,
+            tmux_target  TEXT NOT NULL,
+            pane_id      TEXT NOT NULL,
+            agent_id     TEXT,
+            spawned_at   TEXT NOT NULL,
+            PRIMARY KEY (warroom_id, agent_type)
+        );
+    """)
+    now = _now()
+    conn.execute(
+        "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, created_at, status) "
+        "VALUES (?, ?, ?, ?, ?, 'active')",
+        ("legacy", "main", "legacy", "/tmp", now),
+    )
+    conn.executemany(
+        "INSERT INTO warroom_members (warroom_id, agent_type, tmux_target, pane_id, agent_id, spawned_at) "
+        "VALUES (?, ?, ?, ?, NULL, ?)",
+        [
+            ("legacy", "helioy-tools:backend-engineer", "main:1.0", "%10", now),
+            ("legacy", "helioy-tools:frontend-engineer", "main:1.1", "%11", now),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    # Force the next db() call to re-run _init_db (and the migration)
+    _db_mod._db_initialized = False
+
+    with db() as conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(warroom_members)").fetchall()}
+        assert "warroom_member_id" in cols
+        assert "role" in cols
+        assert "repo" in cols
+        assert "spawn_order" in cols
+        assert "runtime" in cols
+
+        rows = conn.execute(
+            "SELECT * FROM warroom_members WHERE warroom_id = 'legacy' ORDER BY spawn_order"
+        ).fetchall()
+        assert len(rows) == 2
+        assert {r["role"] for r in rows} == {
+            "helioy-tools:backend-engineer",
+            "helioy-tools:frontend-engineer",
+        }
+        assert all(r["runtime"] == "claude" for r in rows)
+        assert all(r["repo"] is None for r in rows)
+        assert sorted(r["spawn_order"] for r in rows) == [0, 1]
+        assert len({r["warroom_member_id"] for r in rows}) == 2
+        # legacy_old table is gone
+        legacy = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='warroom_members_legacy'"
+        ).fetchone()
+        assert legacy is None
