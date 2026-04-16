@@ -24,12 +24,7 @@ from mcp.server.fastmcp import FastMCP
 
 from server._db import INBOX_DIR, _dbg, _now, db
 from server._identity import _self_agent_id, canonical_agent_id
-from server._tmux import (
-    _nudge_allowed,
-    _record_nudge,
-    _tmux_nudge,
-    _tmux_pane_alive,
-)
+from server._tmux import _nudge_allowed, _record_nudge, gateway
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
@@ -161,7 +156,7 @@ def list_agents(tmux_filter: str = "") -> list[dict]:
             "SELECT agent_id, tmux_target FROM agents WHERE tmux_target != ''"
         ).fetchall()
         dead_ids: set[str] = {
-            r["agent_id"] for r in alive_rows if not _tmux_pane_alive(r["tmux_target"])
+            r["agent_id"] for r in alive_rows if not gateway.pane_alive(r["tmux_target"])
         }
         # PID-based pruning for agents without a tmux_target.
         no_tmux_rows = conn.execute(
@@ -362,8 +357,8 @@ def send_message(
             nudge
             and tmux_target
             and _nudge_allowed(target_id)
-            and _tmux_pane_alive(tmux_target)
-            and _tmux_nudge(tmux_target)
+            and gateway.pane_alive(tmux_target)
+            and gateway.nudge(tmux_target)
         ):
             nudged_targets.append(target_id)
             _record_nudge(target_id)

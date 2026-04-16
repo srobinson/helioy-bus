@@ -265,7 +265,7 @@ def test_warroom_spawn_validates_agent_types(fake_plugins, monkeypatch):
     import server.warroom_server as wm
 
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
-    monkeypatch.setattr(wm, "_tmux_check", lambda *args: "main")
+    monkeypatch.setattr(wm.gateway, "_run", lambda *args, **kw: "main")
 
     result = wm.warroom_spawn(name="test-room", agents=["nonexistent-agent-xyz"])
     assert "error" in result
@@ -321,7 +321,7 @@ def test_warroom_spawn_with_mocked_tmux(fake_plugins, monkeypatch):
 
     call_log = []
 
-    def mock_tmux_check(*args):
+    def mock_run(*args, **kw):
         call_log.append(args)
         cmd = args[0]
         if cmd == "display-message":
@@ -332,8 +332,8 @@ def test_warroom_spawn_with_mocked_tmux(fake_plugins, monkeypatch):
             return "%42"
         return ""
 
-    monkeypatch.setattr(wm, "_tmux_check", mock_tmux_check)
-    monkeypatch.setattr(wm, "_spawn_pane", lambda **kw: {
+    monkeypatch.setattr(wm.gateway, "_run", mock_run)
+    monkeypatch.setattr(wm.gateway, "spawn_pane", lambda **kw: {
         "agent_type": kw["agent_type"],
         "qualified_name": kw["qualified_name"],
         "tmux_target": f"main:1.{0 if kw['is_first'] else 1}",
@@ -367,8 +367,8 @@ def test_warroom_spawn_includes_messaging_guidance(fake_plugins, monkeypatch):
     import server.warroom_server as wm
 
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
-    monkeypatch.setattr(wm, "_tmux_check", lambda *a: "main")
-    monkeypatch.setattr(wm, "_spawn_pane", lambda **kw: {
+    monkeypatch.setattr(wm.gateway, "_run", lambda *a, **kw: "main")
+    monkeypatch.setattr(wm.gateway, "spawn_pane", lambda **kw: {
         "agent_type": kw["agent_type"],
         "qualified_name": kw["qualified_name"],
         "tmux_target": f"main:1.{0 if kw['is_first'] else 1}",
@@ -397,7 +397,7 @@ def test_warroom_spawn_repos_includes_messaging_guidance(monkeypatch, tmp_path):
     import server.warroom_server as wm
 
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
-    monkeypatch.setattr(wm, "_tmux_check", lambda *a: "main")
+    monkeypatch.setattr(wm.gateway, "_run", lambda *a, **kw: "main")
 
     # Create two fake git repos
     for name in ("repo-a", "repo-b"):
@@ -419,7 +419,7 @@ def test_warroom_spawn_repos_includes_messaging_guidance(monkeypatch, tmp_path):
             "pane_id": f"%{idx}",
         }
 
-    monkeypatch.setattr(wm, "_spawn_pane", mock_spawn_pane)
+    monkeypatch.setattr(wm.gateway, "spawn_pane", mock_spawn_pane)
 
     result = wm.warroom_spawn_repos(window="repo-wr")
 
@@ -517,7 +517,7 @@ def test_warroom_status_cross_references_agents(monkeypatch):
             ("project:helioy-tools:backend-engineer:main:2.0", "/tmp", "main:2.0", 1234, now, now),
         )
 
-    monkeypatch.setattr(wm, "_tmux_pane_alive", lambda t: True)
+    monkeypatch.setattr(wm.gateway, "pane_alive", lambda t: True)
 
     statuses = wm.warroom_status(name="status-wr")
     assert len(statuses) == 1
@@ -558,7 +558,7 @@ def test_warroom_add_to_existing(fake_plugins, monkeypatch):
             tmux_target="main:1.0", pane_id="%10", now=now,
         )
 
-    monkeypatch.setattr(wm, "_spawn_pane", lambda **kw: {
+    monkeypatch.setattr(wm.gateway, "spawn_pane", lambda **kw: {
         "agent_type": kw["agent_type"],
         "qualified_name": kw["qualified_name"],
         "tmux_target": "main:1.1",
@@ -605,7 +605,7 @@ def test_warroom_add_allows_duplicate_role(fake_plugins, monkeypatch):
             "pane_id": f"%1{idx}",
         }
 
-    monkeypatch.setattr(wm, "_spawn_pane", mock_spawn_pane)
+    monkeypatch.setattr(wm.gateway, "spawn_pane", mock_spawn_pane)
 
     result = wm.warroom_add(name="dup-test", agent="backend-engineer")
     assert "error" not in result
@@ -822,8 +822,8 @@ def test_warroom_spawn_idempotent_replaces_existing(fake_plugins, monkeypatch):
             "pane_id": f"%{idx}",
         }
 
-    monkeypatch.setattr(wm, "_tmux_check", lambda *a: "main")
-    monkeypatch.setattr(wm, "_spawn_pane", mock_spawn_pane)
+    monkeypatch.setattr(wm.gateway, "_run", lambda *a, **kw: "main")
+    monkeypatch.setattr(wm.gateway, "spawn_pane", mock_spawn_pane)
 
     # First spawn
     r1 = wm.warroom_spawn(name="idem-test", agents=["backend-engineer"], cwd="/tmp")
@@ -858,7 +858,7 @@ def test_spawn_pane_role_mode_includes_skip_permissions(monkeypatch):
 
     call_log: list = []
 
-    def mock_tmux_check(*args):
+    def mock_run(*args, **kw):
         call_log.append(args)
         if args[0] == "new-window":
             return "%42"
@@ -866,9 +866,9 @@ def test_spawn_pane_role_mode_includes_skip_permissions(monkeypatch):
             return "main:1.0"
         return ""
 
-    monkeypatch.setattr(tmux_mod, "_tmux_check", mock_tmux_check)
+    monkeypatch.setattr(tmux_mod.gateway, "_run", mock_run)
 
-    tmux_mod._spawn_pane(
+    tmux_mod.gateway.spawn_pane(
         session="main",
         window="test-room",
         cwd="/tmp/project",
@@ -891,7 +891,7 @@ def test_spawn_pane_repo_mode_includes_skip_permissions(monkeypatch):
 
     call_log: list = []
 
-    def mock_tmux_check(*args):
+    def mock_run(*args, **kw):
         call_log.append(args)
         if args[0] == "new-window":
             return "%43"
@@ -899,9 +899,9 @@ def test_spawn_pane_repo_mode_includes_skip_permissions(monkeypatch):
             return "main:1.0"
         return ""
 
-    monkeypatch.setattr(tmux_mod, "_tmux_check", mock_tmux_check)
+    monkeypatch.setattr(tmux_mod.gateway, "_run", mock_run)
 
-    tmux_mod._spawn_pane(
+    tmux_mod.gateway.spawn_pane(
         session="main",
         window="warroom",
         cwd="/tmp/repo",
@@ -948,7 +948,7 @@ def test_warroom_status_includes_token_usage(monkeypatch):
             ("proj:be:main:3.0", "/tmp", "main:3.0", 1234, now, now, token_data),
         )
 
-    monkeypatch.setattr(wm, "_tmux_pane_alive", lambda t: True)
+    monkeypatch.setattr(wm.gateway, "pane_alive", lambda t: True)
 
     statuses = wm.warroom_status(name="token-wr")
     member = statuses[0]["members"][0]
@@ -966,7 +966,7 @@ def test_warroom_spawn_repos_creates_distinct_members_per_repo(monkeypatch, tmp_
     from server._db import db
 
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
-    monkeypatch.setattr(wm, "_tmux_check", lambda *a: "main")
+    monkeypatch.setattr(wm.gateway, "_run", lambda *a, **kw: "main")
 
     for name in ("repo-a", "repo-b", "repo-c"):
         repo = tmp_path / name
@@ -986,7 +986,7 @@ def test_warroom_spawn_repos_creates_distinct_members_per_repo(monkeypatch, tmp_
             "pane_id": f"%{idx}",
         }
 
-    monkeypatch.setattr(wm, "_spawn_pane", mock_spawn_pane)
+    monkeypatch.setattr(wm.gateway, "spawn_pane", mock_spawn_pane)
 
     result = wm.warroom_spawn_repos(window="repo-wr")
     assert "errors" not in result

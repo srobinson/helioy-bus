@@ -21,13 +21,12 @@ import json
 import os
 import re
 import sqlite3
-import subprocess
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from server._db import PRESETS_DIR, _new_member_id, _now, db
-from server._tmux import _spawn_pane, _tmux_check, _tmux_pane_alive
+from server._tmux import gateway
 from server._warroom import (
     _resolve_agent_type,
     _scan_agent_types,
@@ -64,15 +63,7 @@ def _kill_warrooms(
     killed = []
     for row in rows:
         wid = row["warroom_id"]
-        # Use '=' prefix for exact window-name match (tmux 2.x+).
-        # Without '=', tmux uses prefix matching: "eng" would match
-        # "engineering" and kill an unrelated window.
-        target = f"{row['tmux_session']}:={row['tmux_window']}"
-        with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
-            subprocess.run(
-                ["tmux", "kill-window", "-t", target],
-                capture_output=True, timeout=5,
-            )
+        gateway.kill_window(row["tmux_session"], row["tmux_window"])
         conn.execute("DELETE FROM warroom_members WHERE warroom_id = ?", (wid,))
         conn.execute("DELETE FROM warrooms WHERE warroom_id = ?", (wid,))
         killed.append(wid)
@@ -149,10 +140,9 @@ def warroom_spawn_repos(
     if not os.environ.get("TMUX"):
         return {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
 
-    try:
-        session = _tmux_check("display-message", "-p", "#{session_name}")
-    except RuntimeError as e:
-        return {"error": f"Cannot determine tmux session: {e}"}
+    session = gateway.current_session_name()
+    if session is None:
+        return {"error": "Cannot determine tmux session"}
 
     base = Path(os.environ.get("HELIOY_BASE", Path.home() / "Dev/LLM/DEV/helioy"))
     if not base.is_dir():
@@ -171,7 +161,7 @@ def warroom_spawn_repos(
     spawn_errors = []
     for i, repo_path in enumerate(repos):
         try:
-            pane_info = _spawn_pane(
+            pane_info = gateway.spawn_pane(
                 session=session,
                 window=window,
                 cwd=str(repo_path),
@@ -274,10 +264,9 @@ def warroom_spawn(
         return {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
 
     # Resolve the current tmux session name
-    try:
-        session = _tmux_check("display-message", "-p", "#{session_name}")
-    except RuntimeError as e:
-        return {"error": f"Cannot determine tmux session: {e}"}
+    session = gateway.current_session_name()
+    if session is None:
+        return {"error": "Cannot determine tmux session"}
 
     if not cwd:
         cwd = os.getcwd()
@@ -318,7 +307,7 @@ def warroom_spawn(
     spawn_errors = []
     for i, agent_def in enumerate(resolved):
         try:
-            pane_info = _spawn_pane(
+            pane_info = gateway.spawn_pane(
                 session=session,
                 window=name,
                 cwd=cwd,
@@ -449,7 +438,7 @@ def warroom_status(
             members = []
             for m in members_rows:
                 tmux_target = m["tmux_target"]
-                pane_alive = _tmux_pane_alive(tmux_target)
+                pane_alive = gateway.pane_alive(tmux_target)
 
                 registered = m["registered_agent_id"] is not None
                 agent_id = m["registered_agent_id"] if registered else m["agent_id"]
@@ -545,7 +534,7 @@ def warroom_add(
         use_cwd = cwd or wr["cwd"]
 
         try:
-            pane_info = _spawn_pane(
+            pane_info = gateway.spawn_pane(
                 session=wr["tmux_session"],
                 window=wr["tmux_window"],
                 cwd=use_cwd,
@@ -641,11 +630,7 @@ def warroom_remove(
             member = matches[0]
 
         pane_id = member["pane_id"]
-        with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
-            subprocess.run(
-                ["tmux", "kill-pane", "-t", pane_id],
-                capture_output=True, timeout=5,
-            )
+        gateway.kill_pane(pane_id)
 
         conn.execute(
             "DELETE FROM warroom_members WHERE warroom_member_id = ?",
@@ -669,12 +654,7 @@ def warroom_remove(
                 (name,),
             ).fetchone()
             if wr:
-                with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
-                    subprocess.run(
-                        ["tmux", "select-layout", "-t",
-                         f"{wr['tmux_session']}:{wr['tmux_window']}", "tiled"],
-                        capture_output=True, timeout=5,
-                    )
+                gateway.select_layout(wr["tmux_session"], wr["tmux_window"], "tiled")
 
     return {
         "warroom_id": name,
