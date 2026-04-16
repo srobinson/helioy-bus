@@ -5,26 +5,18 @@ stdio transport: each Claude Code instance spawns its own server process.
 Shared state lives in ~/.helioy/bus/ (SQLite registry + file-based mailboxes).
 All agents sharing the same filesystem share the same bus.
 
-Internal modules:
-    _db.py       - Database, path constants, logging
-    _identity.py - Agent identity resolution
-    _tmux.py     - tmux pane management, nudging
+Tool handlers in this module are thin adapters over the application
+services in `server.services`. Domain logic lives there; this module
+owns argument parsing, identity resolution, and wiring observational
+reads to their explicit reconciliation step.
 """
 
 from __future__ import annotations
 
-import contextlib
-import json
-import os
-import tempfile
-import uuid
-from datetime import UTC, datetime, timedelta
-
 from mcp.server.fastmcp import FastMCP
 
-from server._db import INBOX_DIR, _dbg, _now, db
-from server._identity import _self_agent_id, canonical_agent_id
-from server._tmux import _nudge_allowed, _record_nudge, gateway
+from server._identity import _self_agent_id
+from server.services import agent_registry, message, reconciliation
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
@@ -47,20 +39,7 @@ def whoami() -> dict:
         {agent_id, agent_type, tmux_target, cwd, session_id, registered_at, token_usage}
         or {error} if not registered.
     """
-    agent_id = _self_agent_id()
-    with db() as conn:
-        row = conn.execute(
-            "SELECT agent_id, agent_type, tmux_target, cwd, session_id, registered_at, token_usage"
-            " FROM agents WHERE agent_id = ?",
-            (agent_id,),
-        ).fetchone()
-    if row is None:
-        return {"error": f"Not registered on bus. Resolved agent_id: {agent_id!r}"}
-    result = dict(row)
-    if result.get("token_usage"):
-        with contextlib.suppress(json.JSONDecodeError, TypeError):
-            result["token_usage"] = json.loads(result["token_usage"])
-    return result
+    return agent_registry.whoami(agent_id=_self_agent_id())
 
 
 @mcp.tool()
@@ -97,42 +76,14 @@ def register_agent(
     Returns:
         {"agent_id": str, "registered_at": str}
     """
-    if not agent_id:
-        agent_id = canonical_agent_id(pwd, agent_type, tmux_target)
-
-    # Pick up session_id from env if not passed directly
-    if not session_id:
-        session_id = os.environ.get("HELIOY_SESSION_ID", "")
-
-    # Parent PID is the Claude Code process (we are its stdio subprocess)
-    parent_pid = os.getppid()
-    now = _now()
-    profile_json = json.dumps(profile) if profile else None
-
-    with db() as conn:
-        # Pane eviction: a tmux pane hosts at most one Claude process at a
-        # time, so any prior row claiming our tmux_target is stale by
-        # definition. Evicting here is not PID-based liveness guessing — it
-        # is an ownership assertion from the new occupant.
-        if tmux_target:
-            conn.execute(
-                "DELETE FROM agents WHERE tmux_target = ? AND agent_id != ?",
-                (tmux_target, agent_id),
-            )
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO agents
-                (agent_id, cwd, tmux_target, pid, session_id, agent_type, profile, registered_at, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (agent_id, pwd, tmux_target, parent_pid, session_id, agent_type, profile_json, now, now),
-        )
-
-    # Ensure inbox directory exists
-    inbox = INBOX_DIR / agent_id
-    inbox.mkdir(parents=True, exist_ok=True)
-
-    return {"agent_id": agent_id, "registered_at": now}
+    return agent_registry.register(
+        pwd=pwd,
+        tmux_target=tmux_target,
+        agent_id=agent_id,
+        session_id=session_id,
+        agent_type=agent_type,
+        profile=profile,
+    )
 
 
 @mcp.tool()
@@ -150,58 +101,8 @@ def list_agents(tmux_filter: str = "") -> list[dict]:
     pid, registered_at, last_seen. Agents whose tmux pane no longer
     exists are removed from the registry before returning.
     """
-    with db() as conn:
-        # Lazy liveness pruning: check agents that have a tmux_target.
-        alive_rows = conn.execute(
-            "SELECT agent_id, tmux_target FROM agents WHERE tmux_target != ''"
-        ).fetchall()
-        dead_ids: set[str] = {
-            r["agent_id"] for r in alive_rows if not gateway.pane_alive(r["tmux_target"])
-        }
-        # PID-based pruning for agents without a tmux_target.
-        no_tmux_rows = conn.execute(
-            "SELECT agent_id, pid FROM agents WHERE tmux_target = '' AND pid IS NOT NULL"
-        ).fetchall()
-        for r in no_tmux_rows:
-            try:
-                os.kill(r["pid"], 0)
-            except (OSError, ProcessLookupError):
-                dead_ids.add(r["agent_id"])
-
-        if dead_ids:
-            placeholders = ",".join("?" * len(dead_ids))
-            conn.execute(
-                f"DELETE FROM agents WHERE agent_id IN ({placeholders})",
-                list(dead_ids),
-            )
-
-        # Fetch result set with optional SQL filter push-down.
-        # "mysession"  -> LIKE 'mysession:%'
-        # "mysession:2" -> LIKE 'mysession:2.%'
-        if tmux_filter:
-            sql_prefix = tmux_filter + ("." if ":" in tmux_filter else ":") + "%"
-            rows = conn.execute(
-                "SELECT * FROM agents WHERE tmux_target LIKE ? ORDER BY registered_at ASC",
-                (sql_prefix,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM agents ORDER BY registered_at ASC"
-            ).fetchall()
-
-    result = []
-    for row in rows:
-        a = dict(row)
-        if a["agent_id"] in dead_ids:
-            continue
-        if a.get("profile"):
-            with contextlib.suppress(json.JSONDecodeError, TypeError):
-                a["profile"] = json.loads(a["profile"])
-        if a.get("token_usage"):
-            with contextlib.suppress(json.JSONDecodeError, TypeError):
-                a["token_usage"] = json.loads(a["token_usage"])
-        result.append(a)
-    return result
+    reconciliation.prune_dead_agents()
+    return agent_registry.list_active(tmux_filter=tmux_filter)
 
 
 @mcp.tool()
@@ -214,9 +115,7 @@ def unregister_agent(agent_id: str) -> dict:
     Returns:
         {"unregistered": agent_id}
     """
-    with db() as conn:
-        conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
-    return {"unregistered": agent_id}
+    return agent_registry.unregister(agent_id=agent_id)
 
 
 @mcp.tool()
@@ -229,13 +128,7 @@ def heartbeat(agent_id: str) -> dict:
     Returns:
         {"agent_id": str, "last_seen": str}
     """
-    now = _now()
-    with db() as conn:
-        conn.execute(
-            "UPDATE agents SET last_seen = ? WHERE agent_id = ?",
-            (now, agent_id),
-        )
-    return {"agent_id": agent_id, "last_seen": now}
+    return agent_registry.heartbeat(agent_id=agent_id)
 
 
 # ── Mailbox tools ─────────────────────────────────────────────────────────────
@@ -272,103 +165,14 @@ def send_message(
         {"message_id": str, "delivered": bool, "nudged": bool,
          "recipients": [agent_id, ...]}
     """
-    from_agent = _self_agent_id()
-    if not reply_to:
-        reply_to = from_agent
-
-    with db() as conn:
-        if to == "*":
-            # Broadcast: all registered agents except the sender
-            rows = conn.execute(
-                "SELECT agent_id, tmux_target FROM agents WHERE agent_id != ?",
-                (from_agent,),
-            ).fetchall()
-            recipients = [dict(r) for r in rows]
-        elif to.startswith("role:"):
-            # Role-based: all agents with matching agent_type, excluding sender
-            role = to[len("role:"):]
-            rows = conn.execute(
-                "SELECT agent_id, tmux_target FROM agents WHERE agent_type = ? AND agent_id != ?",
-                (role, from_agent),
-            ).fetchall()
-            recipients = [dict(r) for r in rows]
-            if not recipients:
-                return {
-                    "message_id": None,
-                    "delivered": False,
-                    "nudged": False,
-                    "recipients": [],
-                    "error": f"No agents with role '{role}' found in registry",
-                }
-        else:
-            row = conn.execute(
-                "SELECT agent_id, tmux_target FROM agents WHERE agent_id = ?",
-                (to,),
-            ).fetchone()
-            if row is None:
-                return {
-                    "message_id": None,
-                    "delivered": False,
-                    "nudged": False,
-                    "recipients": [],
-                    "error": f"Recipient '{to}' not found in registry",
-                }
-            recipients = [dict(row)]
-
-    message_id = str(uuid.uuid4())
-    now = _now()
-    nudged_targets = []
-    delivered_to = []
-
-    for recipient in recipients:
-        target_id = recipient["agent_id"]
-        tmux_target = recipient.get("tmux_target", "")
-
-        # Build payload
-        payload = {
-            "id": message_id,
-            "from": from_agent,
-            "to": target_id,
-            "reply_to": reply_to,
-            "topic": topic or None,
-            "content": content,
-            "sent_at": now,
-        }
-
-        # Atomic write: temp file + rename (prevents partial reads)
-        inbox = INBOX_DIR / target_id
-        inbox.mkdir(parents=True, exist_ok=True)
-
-        filename = f"{now.replace(':', '-')}_{message_id[:8]}.json"
-        _dbg(f"send_message: delivering to={target_id!r} inbox={inbox} file={filename}")
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(inbox), suffix=".tmp")
-        try:
-            with os.fdopen(tmp_fd, "w") as f:
-                json.dump(payload, f, indent=2)
-            os.rename(tmp_path, str(inbox / filename))
-        except Exception:
-            os.unlink(tmp_path)
-            raise
-
-        delivered_to.append(target_id)
-
-        # tmux nudge: verify pane alive, respect throttle, record on success
-        if (
-            nudge
-            and tmux_target
-            and _nudge_allowed(target_id)
-            and gateway.pane_alive(tmux_target)
-            and gateway.nudge(tmux_target)
-        ):
-            nudged_targets.append(target_id)
-            _record_nudge(target_id)
-
-    return {
-        "message_id": message_id,
-        "delivered": bool(delivered_to),
-        "nudged": bool(nudged_targets),
-        "recipients": delivered_to,
-    }
+    return message.send(
+        sender_id=_self_agent_id(),
+        to=to,
+        content=content,
+        reply_to=reply_to,
+        topic=topic,
+        nudge=nudge,
+    )
 
 
 @mcp.tool()
@@ -385,41 +189,8 @@ def get_messages(agent_id: str = "", topic: str = "") -> list[dict]:
     """
     if not agent_id:
         agent_id = _self_agent_id()
-
-    inbox = INBOX_DIR / agent_id
-    _dbg(f"get_messages: agent_id={agent_id!r} topic={topic!r} inbox={inbox} exists={inbox.exists()}")
-
-    if not inbox.exists():
-        _dbg("get_messages: inbox missing \u2192 []")
-        return []
-
-    archive = inbox / "archive"
-    archive.mkdir(parents=True, exist_ok=True)
-
-    msg_files = sorted(inbox.glob("*.json"))
-    _dbg(f"get_messages: found {len(msg_files)} file(s): {[p.name for p in msg_files]}")
-    messages = []
-
-    for path in msg_files:
-        try:
-            data = json.loads(path.read_text())
-            if topic and data.get("topic") != topic:
-                continue  # leave non-matching messages in inbox
-            messages.append(data)
-            path.rename(archive / path.name)
-        except (json.JSONDecodeError, OSError):
-            continue
-
-    # Lazy archive TTL: remove archived files older than 7 days.
-    cutoff = datetime.now(UTC) - timedelta(days=7)
-    for archived in archive.glob("*.json"):
-        try:
-            if datetime.fromtimestamp(archived.stat().st_mtime, UTC) < cutoff:
-                archived.unlink()
-        except OSError:
-            continue
-
-    _dbg(f"get_messages: returning {len(messages)} message(s)")
+    messages = message.read(agent_id=agent_id, topic=topic)
+    reconciliation.prune_archived_messages(agent_id)
     return messages
 
 

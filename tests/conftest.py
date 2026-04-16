@@ -20,13 +20,9 @@ def isolated_bus(tmp_path, monkeypatch):
     monkeypatch.setattr(_db_mod, "BUS_DIR", bus_dir)
     monkeypatch.setattr(_db_mod, "REGISTRY_DB", bus_dir / "registry.db")
     monkeypatch.setattr(_db_mod, "INBOX_DIR", bus_dir / "inbox")
+    monkeypatch.setattr(_db_mod, "PRESETS_DIR", bus_dir / "presets")
     # Reset init flag so each test gets a fresh schema bootstrap
     monkeypatch.setattr(_db_mod, "_db_initialized", False)
-
-    # Also patch bus_server's imported copies (used by tool functions and test assertions)
-    import server.bus_server as bm
-
-    monkeypatch.setattr(bm, "INBOX_DIR", bus_dir / "inbox")
 
     yield bus_dir
 
@@ -36,7 +32,9 @@ def set_sender(monkeypatch):
     """Mock _self_agent_id to control sender identity in send_message calls.
 
     Usage: set_sender("alpha") before calling bm.send_message().
-    Can be called multiple times to change identity mid-test.
+    Can be called multiple times to change identity mid-test. Patches the
+    name as imported into bus_server, since that is the binding the tool
+    handlers reach for.
     """
     import server.bus_server as bm
 

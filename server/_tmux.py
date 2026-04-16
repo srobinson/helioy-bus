@@ -5,73 +5,16 @@ tmux binary. All subprocess calls go through it. Handlers and services
 depend on the `gateway` singleton; nothing else in the codebase runs
 `subprocess.run(["tmux", ...])`.
 
-Nudge throttling policy (`_nudge_allowed`, `_record_nudge`,
-`_inbox_has_unread`) is a data-layer concern, not a tmux concern, and
-stays as module-level functions.
+Nudge throttling policy lives in `services.message` since it is a
+data-layer concern about messaging, not about tmux.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
-from datetime import UTC, datetime, timedelta
 
 from server import _db
-
-NUDGE_THROTTLE_SECONDS = 30  # 30 seconds
-
-
-# ── Nudge policy (data-layer, not tmux-layer) ────────────────────────────────
-
-
-def _inbox_has_unread(agent_id: str) -> bool:
-    """Return True if the agent's inbox contains unread messages."""
-    inbox = _db.INBOX_DIR / agent_id
-    if not inbox.exists():
-        return False
-    return bool(list(inbox.glob("*.json")))
-
-
-def _nudge_allowed(agent_id: str) -> bool:
-    """Return True if a nudge should be sent to the agent.
-
-    Allows re-nudging within the throttle window if the inbox still has
-    unread messages, meaning the previous nudge did not wake the agent.
-    """
-    with _db.db() as conn:
-        row = conn.execute(
-            "SELECT nudged_at FROM nudge_log WHERE agent_id = ? ORDER BY nudged_at DESC LIMIT 1",
-            (agent_id,),
-        ).fetchone()
-        if row is None:
-            return True
-        last = row["nudged_at"]
-        cutoff_dt = datetime.now(UTC) - timedelta(seconds=NUDGE_THROTTLE_SECONDS)
-        if last < cutoff_dt.isoformat():
-            return True  # throttle window expired
-        # Within throttle window, but previous nudge may not have worked.
-        # If unread messages remain, the agent never woke up. Re-nudge.
-        if _inbox_has_unread(agent_id):
-            _db._dbg(
-                f"_nudge_allowed: {agent_id!r} throttled but inbox has unread messages, "
-                "allowing re-nudge"
-            )
-            return True
-        return False
-
-
-def _record_nudge(agent_id: str) -> None:
-    with _db.db() as conn:
-        conn.execute(
-            "INSERT INTO nudge_log (agent_id, nudged_at) VALUES (?, ?)",
-            (agent_id, _db._now()),
-        )
-        # Prune old entries (keep last 24h)
-        conn.execute(
-            "DELETE FROM nudge_log WHERE nudged_at < ?",
-            ((datetime.now(UTC) - timedelta(hours=24)).isoformat(),),
-        )
-
 
 # ── TmuxGateway: the only place that runs subprocess.run(["tmux", ...]) ──────
 

@@ -12,6 +12,12 @@ from unittest.mock import patch
 
 import pytest
 
+# Tests patch the tmux gateway singleton and the messaging service's nudge
+# throttle directly. Handlers no longer re-export these symbols since the
+# ALP-1789 service extraction.
+from server._tmux import gateway
+from server.services import message as message_svc
+
 
 # ── Registry ──────────────────────────────────────────────────────────────────
 
@@ -138,7 +144,7 @@ def test_list_agents_filter_by_session():
     bm.register_agent(pwd="/tmp/b", tmux_target="work:1.0", agent_id="b:work:1.0")
     bm.register_agent(pwd="/tmp/c", tmux_target="other:0.0", agent_id="c:other:0.0")
 
-    with patch.object(bm.gateway, "pane_alive", return_value=True):
+    with patch.object(gateway, "pane_alive", return_value=True):
         agents = bm.list_agents(tmux_filter="work")
 
     ids = [a["agent_id"] for a in agents]
@@ -155,7 +161,7 @@ def test_list_agents_filter_by_session_and_window():
     bm.register_agent(pwd="/tmp/b", tmux_target="work:0.1", agent_id="b:work:0.1")
     bm.register_agent(pwd="/tmp/c", tmux_target="work:1.0", agent_id="c:work:1.0")
 
-    with patch.object(bm.gateway, "pane_alive", return_value=True):
+    with patch.object(gateway, "pane_alive", return_value=True):
         agents = bm.list_agents(tmux_filter="work:0")
 
     ids = [a["agent_id"] for a in agents]
@@ -297,7 +303,7 @@ def test_list_agents_prunes_dead_tmux_targets():
     bm.register_agent(pwd="/tmp/dead", tmux_target="main:0.1", agent_id="dead:main:0.1")
 
     with patch.object(
-        bm.gateway, "pane_alive", side_effect=lambda t: t == "main:0.0"
+        gateway, "pane_alive", side_effect=lambda t: t == "main:0.0"
     ):
         agents = bm.list_agents()
 
@@ -323,7 +329,7 @@ def test_send_message_nudge_skips_dead_pane(set_sender):
 
     bm.register_agent(pwd="/tmp/dead", tmux_target="main:9.9", agent_id="dead:main:9.9")
     set_sender("nudger")
-    with patch.object(bm.gateway, "pane_alive", return_value=False):
+    with patch.object(gateway, "pane_alive", return_value=False):
         result = bm.send_message(to="dead:main:9.9", content="wake up")
     assert result["delivered"] is True
     assert result["nudged"] is False
@@ -335,8 +341,8 @@ def test_send_message_nudge_suppressed_with_flag(set_sender):
     bm.register_agent(pwd="/tmp/quiet", tmux_target="main:0.0", agent_id="quiet:main:0.0")
     set_sender("sender")
     with (
-        patch.object(bm.gateway, "pane_alive", return_value=True),
-        patch.object(bm.gateway, "nudge", return_value=True) as mock_nudge,
+        patch.object(gateway, "pane_alive", return_value=True),
+        patch.object(gateway, "nudge", return_value=True) as mock_nudge,
     ):
         result = bm.send_message(to="quiet:main:0.0", content="shh", nudge=False)
     assert result["nudged"] is False
@@ -349,9 +355,9 @@ def test_send_message_nudges_live_pane(set_sender):
     bm.register_agent(pwd="/tmp/live", tmux_target="main:0.0", agent_id="live:main:0.0")
     set_sender("sender")
     with (
-        patch.object(bm.gateway, "pane_alive", return_value=True),
-        patch.object(bm.gateway, "nudge", return_value=True),
-        patch.object(bm, "_nudge_allowed", return_value=True),
+        patch.object(gateway, "pane_alive", return_value=True),
+        patch.object(gateway, "nudge", return_value=True),
+        patch.object(message_svc, "_nudge_allowed", return_value=True),
     ):
         result = bm.send_message(to="live:main:0.0", content="ping")
     assert result["nudged"] is True
@@ -588,7 +594,7 @@ def test_repo_mode_lifecycle(set_sender):
         tmux_target="7:2.2",
     )
 
-    with patch.object(bm.gateway, "pane_alive", return_value=True):
+    with patch.object(gateway, "pane_alive", return_value=True):
         agents = bm.list_agents()
     assert len(agents) == 2
     assert all(a["agent_type"] == "general" for a in agents)
@@ -610,7 +616,7 @@ def test_repo_mode_lifecycle(set_sender):
     # Unregister
     bm.unregister_agent("fmm:general:7:2.1")
     bm.unregister_agent("helioy-bus:general:7:2.2")
-    with patch.object(bm.gateway, "pane_alive", return_value=True):
+    with patch.object(gateway, "pane_alive", return_value=True):
         assert bm.list_agents() == []
 
 
@@ -691,7 +697,7 @@ def test_coexistence_of_both_modes(set_sender):
         tmux_target="7:3.2",
     )
 
-    with patch.object(bm.gateway, "pane_alive", return_value=True):
+    with patch.object(gateway, "pane_alive", return_value=True):
         agents = bm.list_agents()
     assert len(agents) == 4
 
@@ -759,7 +765,6 @@ def test_profile_migration_from_shell_hook_created_db(tmp_path, monkeypatch):
     monkeypatch.setattr(_db_mod, "BUS_DIR", bus_dir)
     monkeypatch.setattr(_db_mod, "REGISTRY_DB", bus_dir / "registry.db")
     monkeypatch.setattr(_db_mod, "INBOX_DIR", bus_dir / "inbox")
-    monkeypatch.setattr(bm, "INBOX_DIR", bus_dir / "inbox")
 
     # Simulate the DB as bus-register.sh creates it: no profile column.
     conn = sqlite3.connect(str(bus_dir / "registry.db"))
