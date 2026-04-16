@@ -189,11 +189,12 @@ def test_warroom_spawn_records_runtime_from_adapter(monkeypatch):
         "model": "opus",
     }
     monkeypatch.setattr(
-        warroom_service, "_scan_agent_types", lambda: [fake_agent]
+        warroom_service, "_scan_agent_types",
+        lambda runtime_id=None: [fake_agent],
     )
     monkeypatch.setattr(
         warroom_service, "_resolve_agent_type",
-        lambda name: fake_agent if name in {"bar", "foo:bar"} else None,
+        lambda name, runtime_id=None: fake_agent if name in {"bar", "foo:bar"} else None,
     )
     monkeypatch.setattr(
         tmux_mod.gateway, "current_session_name", lambda: "alp"
@@ -252,7 +253,10 @@ def test_codex_adapter_self_pid_env_is_helioy_bus_codex_pid():
 
 
 def test_codex_adapter_agents_cache_dir_points_to_codex_skills():
-    assert CODEX.agents_cache_dir() == Path.home() / ".codex" / "skills"
+    # Autouse isolated_codex_cache fixture monkeypatches CODEX.agents_cache_dir
+    # to a tmp dir so union-discovery tests are hermetic; instantiate a fresh
+    # adapter here to assert the real default location.
+    assert CodexRuntimeAdapter().agents_cache_dir() == Path.home() / ".codex" / "skills"
 
 
 def test_codex_adapter_satisfies_runtime_adapter_protocol():
@@ -372,11 +376,12 @@ def test_warroom_spawn_persists_requested_codex_runtime(monkeypatch):
         "model": "opus",
     }
     monkeypatch.setattr(
-        warroom_service, "_scan_agent_types", lambda: [fake_agent]
+        warroom_service, "_scan_agent_types",
+        lambda runtime_id=None: [fake_agent],
     )
     monkeypatch.setattr(
         warroom_service, "_resolve_agent_type",
-        lambda name: fake_agent if name in {"bar", "foo:bar"} else None,
+        lambda name, runtime_id=None: fake_agent if name in {"bar", "foo:bar"} else None,
     )
     monkeypatch.setattr(
         tmux_mod.gateway, "current_session_name", lambda: "alp"
@@ -421,10 +426,13 @@ def test_warroom_spawn_threads_runtime_to_spawn_pane(monkeypatch):
         "summary": "",
         "model": "opus",
     }
-    monkeypatch.setattr(warroom_service, "_scan_agent_types", lambda: [fake_agent])
+    monkeypatch.setattr(
+        warroom_service, "_scan_agent_types",
+        lambda runtime_id=None: [fake_agent],
+    )
     monkeypatch.setattr(
         warroom_service, "_resolve_agent_type",
-        lambda name: fake_agent if name in {"bar", "foo:bar"} else None,
+        lambda name, runtime_id=None: fake_agent if name in {"bar", "foo:bar"} else None,
     )
     monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
 
@@ -459,10 +467,13 @@ def test_warroom_spawn_rejects_unknown_runtime(monkeypatch):
         "summary": "",
         "model": "opus",
     }
-    monkeypatch.setattr(warroom_service, "_scan_agent_types", lambda: [fake_agent])
+    monkeypatch.setattr(
+        warroom_service, "_scan_agent_types",
+        lambda runtime_id=None: [fake_agent],
+    )
     monkeypatch.setattr(
         warroom_service, "_resolve_agent_type",
-        lambda name: fake_agent if name in {"bar", "foo:bar"} else None,
+        lambda name, runtime_id=None: fake_agent if name in {"bar", "foo:bar"} else None,
     )
     monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
@@ -489,10 +500,13 @@ def test_warroom_add_persists_requested_codex_runtime(monkeypatch):
         "summary": "",
         "model": "opus",
     }
-    monkeypatch.setattr(warroom_service, "_scan_agent_types", lambda: [fake_agent])
+    monkeypatch.setattr(
+        warroom_service, "_scan_agent_types",
+        lambda runtime_id=None: [fake_agent],
+    )
     monkeypatch.setattr(
         warroom_service, "_resolve_agent_type",
-        lambda name: fake_agent if name in {"bar", "foo:bar"} else None,
+        lambda name, runtime_id=None: fake_agent if name in {"bar", "foo:bar"} else None,
     )
     monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
     monkeypatch.setattr(

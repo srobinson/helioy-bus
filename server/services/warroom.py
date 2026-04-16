@@ -102,10 +102,28 @@ def _resolve_runtime(runtime: str) -> tuple[str, dict | None]:
 # ── Service operations ────────────────────────────────────────────────────────
 
 
-def discover(*, query: str = "", namespace: str = "", limit: int = 20) -> dict:
-    """Search available agent types from the plugin cache."""
-    all_types = _scan_agent_types()
+def discover(
+    *,
+    query: str = "",
+    namespace: str = "",
+    limit: int = 20,
+    runtime: str = "",
+) -> dict:
+    """Search available agent types across registered runtimes.
+
+    Empty ``runtime`` returns the union (every registered runtime's
+    catalogue). A registered runtime id scopes discovery to that runtime.
+    Unknown runtime ids return a helpful error listing the registered ids.
+    """
+    if runtime:
+        runtime_id, err = _resolve_runtime(runtime)
+        if err:
+            return err
+        all_types = _scan_agent_types(runtime_id)
+    else:
+        all_types = _scan_agent_types()
     all_namespaces = sorted({a["namespace"] for a in all_types})
+    all_runtimes = sorted({a.get("runtime", "") for a in all_types if a.get("runtime")})
 
     filtered = all_types
     if namespace:
@@ -121,6 +139,7 @@ def discover(*, query: str = "", namespace: str = "", limit: int = 20) -> dict:
         "agents": filtered[:limit],
         "total": len(filtered),
         "namespaces": all_namespaces,
+        "runtimes": all_runtimes,
     }
 
 
@@ -244,9 +263,9 @@ def spawn(
 
     resolved = []
     errors = []
-    all_types = _scan_agent_types()
+    all_types = _scan_agent_types(runtime_id)
     for agent_name in agents:
-        agent_def = _resolve_agent_type(agent_name)
+        agent_def = _resolve_agent_type(agent_name, runtime_id)
         if agent_def is None:
             errors.append({
                 "agent": agent_name,
@@ -408,17 +427,17 @@ def status(*, name: str = "") -> list[dict]:
 
 
 def add(*, name: str, agent: str, cwd: str = "", runtime: str = "") -> dict:
-    agent_def = _resolve_agent_type(agent)
+    runtime_id, err = _resolve_runtime(runtime)
+    if err:
+        return err
+
+    agent_def = _resolve_agent_type(agent, runtime_id)
     if not agent_def:
-        all_types = _scan_agent_types()
+        all_types = _scan_agent_types(runtime_id)
         return {
             "error": "Unknown agent type",
             "suggestions": _build_suggestions(agent, all_types),
         }
-
-    runtime_id, err = _resolve_runtime(runtime)
-    if err:
-        return err
 
     qn = agent_def["qualified_name"]
 

@@ -21,6 +21,7 @@ class RuntimeAdapter(Protocol):
       * launch command construction
       * identity bootstrap (env var names)
       * runtime capability metadata (agent cache dir, runtime id)
+      * agent/skill catalogue discovery
     """
 
     runtime_id: str
@@ -44,7 +45,29 @@ class RuntimeAdapter(Protocol):
         ...
 
     def agents_cache_dir(self) -> Path:
-        """Return the plugin-agent-definition cache directory for this runtime."""
+        """Return the root of this runtime's agent/skill catalogue on disk."""
+        ...
+
+    def discover_agent_types(self) -> list[dict]:
+        """Return all agent type definitions this runtime knows about.
+
+        The return value is a list of dicts with the fields:
+
+          * ``qualified_name`` — ``{namespace}:{name}``, unique within the
+            catalogue returned by this adapter
+          * ``name`` — short name
+          * ``namespace`` — logical group (plugin name, skill scope, ...)
+          * ``summary`` — human-readable description, truncated to <=200
+            characters
+          * ``model`` — optional model hint from frontmatter, or empty
+            string if absent
+          * ``runtime`` — this adapter's :attr:`runtime_id`
+
+        Returned dicts contain no adapter-internal fields (e.g. mtime)
+        and the list is sorted by ``qualified_name``. An adapter whose
+        catalogue directory does not yet exist returns an empty list
+        rather than raising.
+        """
         ...
 
 
@@ -82,7 +105,7 @@ def registered_adapters() -> list[RuntimeAdapter]:
     """Return all currently registered adapters in registration order.
 
     Used by identity resolution to iterate every runtime's self-PID env
-    var, so the bus resolves identity for any registered runtime without
-    a hardcoded list.
+    var, and by discovery to build a union catalogue across runtimes,
+    so the bus handles any registered runtime without a hardcoded list.
     """
     return list(_adapters.values())

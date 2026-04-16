@@ -32,21 +32,27 @@ def warroom_discover(
     query: str = "",
     namespace: str = "",
     limit: int = 20,
+    runtime: str = "",
 ) -> dict:
-    """Search available agent types that can be spawned in a warroom.
+    """Search available agent types across registered runtimes.
 
-    Scans the Claude Code plugin cache for agent definitions and returns
-    matching entries. Uses an in-memory cache with 60s TTL.
+    Each runtime adapter owns its own catalogue layout (Claude plugin
+    cache vs. Codex skills, etc.) and contributes agents via
+    ``discover_agent_types()``. Results are cached per runtime with 60s TTL.
 
     Args:
         query: Substring match against agent name and description. Empty returns all.
-        namespace: Filter to a specific plugin namespace (e.g. 'helioy-tools'). Empty returns all.
+        namespace: Filter to a specific namespace (e.g. 'helioy-tools', 'codex').
         limit: Maximum number of results to return (default 20).
+        runtime: Scope discovery to one runtime id ('claude', 'codex', ...).
+            Empty returns the union across every registered runtime.
 
     Returns:
-        {agents: [...], total: int, namespaces: [...]}
+        {agents: [...], total: int, namespaces: [...], runtimes: [...]}
     """
-    return warroom.discover(query=query, namespace=namespace, limit=limit)
+    return warroom.discover(
+        query=query, namespace=namespace, limit=limit, runtime=runtime
+    )
 
 
 @mcp.tool()

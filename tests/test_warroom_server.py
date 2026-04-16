@@ -82,12 +82,12 @@ def test_scan_agent_types_finds_all(fake_plugins):
     assert "voltagent-lang:backend-engineer" in names
 
 
-def test_scan_agent_types_cached(fake_plugins):
-    """Second call returns cached results (same list identity)."""
+def test_scan_agent_types_cached_per_runtime(fake_plugins):
+    """Second scoped call returns the cached list (same identity)."""
     import server._warroom as wr
 
-    first = wr._scan_agent_types()
-    second = wr._scan_agent_types()
+    first = wr._scan_agent_types("claude")
+    second = wr._scan_agent_types("claude")
     assert first is second
 
 
@@ -112,17 +112,12 @@ def test_scan_agent_types_deduplicates_versions(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(CLAUDE, "agents_cache_dir", lambda: cache)
-    wr._agent_types_cache.clear()
-    wr._agent_types_cache_ts = 0.0
 
-    types = wr._scan_agent_types()
+    types = wr._scan_agent_types("claude")
     matches = [t for t in types if t["name"] == "my-agent"]
     assert len(matches) == 1
     assert matches[0]["summary"] == "new"
     assert matches[0]["model"] == "opus"
-
-    wr._agent_types_cache.clear()
-    wr._agent_types_cache_ts = 0.0
 
 
 # ── Warroom: _resolve_agent_type ─────────────────────────────────────────────
