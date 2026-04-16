@@ -17,7 +17,7 @@ from pathlib import Path
 from server import _db
 from server._tmux import gateway
 from server._warroom import _resolve_agent_type, _scan_agent_types
-from server.runtimes import default_adapter
+from server.runtimes import default_adapter, for_id, registered_adapters
 
 VALID_LAYOUTS = {
     "tiled", "even-horizontal", "even-vertical",
@@ -79,6 +79,26 @@ def _build_suggestions(needle: str, all_types: list[dict], limit: int = 5) -> li
     ][:limit]
 
 
+def _resolve_runtime(runtime: str) -> tuple[str, dict | None]:
+    """Normalize and validate a user-supplied runtime id.
+
+    Empty string falls back to the default adapter's runtime_id without
+    re-validation (the default is registered by construction). A
+    non-empty runtime is validated against the registry. Returns
+    ``(runtime_id, None)`` on success or ``("", error_dict)`` when the
+    requested runtime is not registered, matching the service's error
+    convention.
+    """
+    if not runtime:
+        return default_adapter().runtime_id, None
+    try:
+        for_id(runtime)
+    except KeyError:
+        known = sorted(a.runtime_id for a in registered_adapters())
+        return "", {"error": f"Unknown runtime {runtime!r}. Known: {known}"}
+    return runtime, None
+
+
 # ── Service operations ────────────────────────────────────────────────────────
 
 
@@ -104,7 +124,12 @@ def discover(*, query: str = "", namespace: str = "", limit: int = 20) -> dict:
     }
 
 
-def spawn_repos(*, window: str = "warroom", layout: str = "tiled") -> dict:
+def spawn_repos(
+    *,
+    window: str = "warroom",
+    layout: str = "tiled",
+    runtime: str = "",
+) -> dict:
     """Spawn one general-role agent per helioy repo in a single tmux window."""
     if not os.environ.get("TMUX"):
         return {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
@@ -112,6 +137,10 @@ def spawn_repos(*, window: str = "warroom", layout: str = "tiled") -> dict:
     session = gateway.current_session_name()
     if session is None:
         return {"error": "Cannot determine tmux session"}
+
+    runtime_id, err = _resolve_runtime(runtime)
+    if err:
+        return err
 
     base = Path(os.environ.get("HELIOY_BASE", Path.home() / "Dev/LLM/DEV/helioy"))
     if not base.is_dir():
@@ -137,6 +166,7 @@ def spawn_repos(*, window: str = "warroom", layout: str = "tiled") -> dict:
                 qualified_name=None,
                 is_first=(i == 0),
                 layout=layout,
+                runtime=runtime_id,
             )
             pane_info["repo"] = repo_path.name
             members.append(pane_info)
@@ -150,7 +180,6 @@ def spawn_repos(*, window: str = "warroom", layout: str = "tiled") -> dict:
                VALUES (?, ?, ?, ?, ?, 'active')""",
             (window, session, window, str(base), now),
         )
-        runtime_id = default_adapter().runtime_id
         for order, m in enumerate(members):
             role = m["qualified_name"] or m["agent_type"] or "general"
             member_id = _db._new_member_id()
@@ -184,6 +213,7 @@ def spawn(
     agents: list[str],
     cwd: str = "",
     layout: str = "tiled",
+    runtime: str = "",
 ) -> dict:
     """Create a named warroom with one runtime pane per agent type."""
     if not name or not WARROOM_NAME_RE.match(name):
@@ -204,6 +234,10 @@ def spawn(
     session = gateway.current_session_name()
     if session is None:
         return {"error": "Cannot determine tmux session"}
+
+    runtime_id, err = _resolve_runtime(runtime)
+    if err:
+        return err
 
     if not cwd:
         cwd = os.getcwd()
@@ -242,6 +276,7 @@ def spawn(
                 qualified_name=agent_def["qualified_name"],
                 is_first=(i == 0),
                 layout=layout,
+                runtime=runtime_id,
             )
             members.append(pane_info)
         except RuntimeError as e:
@@ -257,7 +292,6 @@ def spawn(
                VALUES (?, ?, ?, ?, ?, 'active')""",
             (name, session, name, cwd, now),
         )
-        runtime_id = default_adapter().runtime_id
         for order, m in enumerate(members):
             member_id = _db._new_member_id()
             conn.execute(
@@ -373,7 +407,7 @@ def status(*, name: str = "") -> list[dict]:
     return result
 
 
-def add(*, name: str, agent: str, cwd: str = "") -> dict:
+def add(*, name: str, agent: str, cwd: str = "", runtime: str = "") -> dict:
     agent_def = _resolve_agent_type(agent)
     if not agent_def:
         all_types = _scan_agent_types()
@@ -381,6 +415,10 @@ def add(*, name: str, agent: str, cwd: str = "") -> dict:
             "error": "Unknown agent type",
             "suggestions": _build_suggestions(agent, all_types),
         }
+
+    runtime_id, err = _resolve_runtime(runtime)
+    if err:
+        return err
 
     qn = agent_def["qualified_name"]
 
@@ -409,6 +447,7 @@ def add(*, name: str, agent: str, cwd: str = "") -> dict:
                 qualified_name=qn,
                 is_first=False,
                 layout="tiled",
+                runtime=runtime_id,
             )
         except RuntimeError as e:
             return {"error": f"Spawn failed: {e}"}
@@ -420,7 +459,7 @@ def add(*, name: str, agent: str, cwd: str = "") -> dict:
                (warroom_member_id, warroom_id, runtime, role, repo,
                 spawn_order, tmux_target, pane_id, agent_id, spawned_at)
                VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)""",
-            (member_id, name, default_adapter().runtime_id, qn, next_order,
+            (member_id, name, runtime_id, qn, next_order,
              pane_info["tmux_target"], pane_info["pane_id"], now),
         )
         count = conn.execute(

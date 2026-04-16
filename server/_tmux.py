@@ -15,7 +15,7 @@ import os
 import subprocess
 
 from server import _db
-from server.runtimes import default_adapter
+from server.runtimes import default_adapter, for_id
 
 # ── TmuxGateway: the only place that runs subprocess.run(["tmux", ...]) ──────
 
@@ -141,18 +141,20 @@ class TmuxGateway:
         qualified_name: str | None,
         is_first: bool,
         layout: str,
+        runtime: str | None = None,
     ) -> dict:
         """Create a single tmux pane running a runtime agent.
 
-        Returns a dict with tmux_target, pane_id, agent_type, and
-        qualified_name. The ordering contract: pane title is set BEFORE
-        send-keys so identity resolution works when the runtime's
-        startup hook fires. When qualified_name is None, spawns a
-        general session without a specialist role (repo-mode).
+        Returns a dict with tmux_target, pane_id, agent_type,
+        qualified_name, and runtime (the adapter's runtime_id). The
+        ordering contract: pane title is set BEFORE send-keys so
+        identity resolution works when the runtime's startup hook
+        fires. When qualified_name is None, spawns a general session
+        without a specialist role (repo-mode).
 
-        The concrete launch command comes from the active
-        :class:`~server.runtimes.base.RuntimeAdapter`; this gateway
-        stays runtime-agnostic.
+        The concrete launch command comes from the runtime adapter
+        resolved by ``runtime`` (or the default adapter when
+        ``runtime`` is None); this gateway stays runtime-agnostic.
         """
         repo = os.path.basename(cwd)
 
@@ -186,7 +188,8 @@ class TmuxGateway:
                 "allow-rename", "off",
             )
 
-        cmd = default_adapter().build_launch_command(qualified_name=qualified_name)
+        adapter = for_id(runtime) if runtime else default_adapter()
+        cmd = adapter.build_launch_command(qualified_name=qualified_name)
         self._run("send-keys", "-t", pane_id, cmd, "Enter")
 
         self._run("select-layout", "-t", f"{session}:{window}", layout)
@@ -196,6 +199,7 @@ class TmuxGateway:
             "qualified_name": qualified_name,
             "tmux_target": tmux_target,
             "pane_id": pane_id,
+            "runtime": adapter.runtime_id,
         }
 
 

@@ -70,3 +70,13 @@ def default_adapter() -> RuntimeAdapter:
     if _default_id is None:
         raise RuntimeError("No runtime adapter registered")
     return _adapters[_default_id]
+
+
+def registered_adapters() -> list[RuntimeAdapter]:
+    """Return all currently registered adapters in registration order.
+
+    Used by identity resolution to iterate every runtime's self-PID env
+    var, so the bus resolves identity for any registered runtime without
+    a hardcoded list.
+    """
+    return list(_adapters.values())

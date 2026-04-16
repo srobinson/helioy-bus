@@ -53,12 +53,13 @@ def warroom_discover(
 def warroom_spawn_repos(
     window: str = "warroom",
     layout: str = "tiled",
+    runtime: str = "",
 ) -> dict:
     """Spawn one general-role agent per helioy repo in a single tmux window.
 
     Repo-mode: each pane runs in the repo's directory without a specialist
-    role. The concrete launch command is supplied by the active runtime
-    adapter (Claude while it is the incumbent runtime).
+    role. The concrete launch command is supplied by the runtime adapter
+    selected by ``runtime`` (defaults to the incumbent runtime when empty).
 
     Repos are discovered by scanning HELIOY_BASE for subdirectories that
     contain a .git folder. Uses HELIOY_BASE env var (default:
@@ -68,11 +69,13 @@ def warroom_spawn_repos(
     Args:
         window: tmux window name. Default "warroom".
         layout: tmux layout algorithm. Default "tiled".
+        runtime: Runtime id (e.g. "claude", "codex"). Empty string uses
+            the default adapter.
 
     Returns:
         {warroom_id, tmux_window, members: [...], spawned_at}
     """
-    return warroom.spawn_repos(window=window, layout=layout)
+    return warroom.spawn_repos(window=window, layout=layout, runtime=runtime)
 
 
 @mcp.tool()
@@ -81,6 +84,7 @@ def warroom_spawn(
     agents: list[str],
     cwd: str = "",
     layout: str = "tiled",
+    runtime: str = "",
 ) -> dict:
     """Create a warroom: a tmux window with one runtime pane per agent type.
 
@@ -96,11 +100,15 @@ def warroom_spawn(
         cwd: Working directory for all panes. Defaults to caller's cwd.
         layout: tmux layout algorithm (tiled, even-horizontal, even-vertical,
                 main-horizontal, main-vertical). Default: tiled.
+        runtime: Runtime id for all spawned panes (e.g. "claude", "codex").
+            Empty string uses the default adapter.
 
     Returns:
         {warroom_id, tmux_window, members: [...], spawned_at}
     """
-    return warroom.spawn(name=name, agents=agents, cwd=cwd, layout=layout)
+    return warroom.spawn(
+        name=name, agents=agents, cwd=cwd, layout=layout, runtime=runtime
+    )
 
 
 @mcp.tool()
@@ -147,23 +155,27 @@ def warroom_add(
     name: str,
     agent: str,
     cwd: str = "",
+    runtime: str = "",
 ) -> dict:
     """Add an agent to an existing warroom.
 
-    Splits a new pane in the warroom's tmux window and launches the active
-    runtime with the specified agent type. Duplicate roles are allowed: each
-    call creates a new stable member record.
+    Splits a new pane in the warroom's tmux window and launches the
+    chosen runtime with the specified agent type. Duplicate roles are
+    allowed: each call creates a new stable member record. The ``runtime``
+    arg lets a warroom mix runtimes across members (per-member dispatch).
 
     Args:
         name: Warroom identifier.
         agent: Agent type name (qualified or short).
         cwd: Working directory for the new pane. Defaults to the warroom's
              original cwd.
+        runtime: Runtime id for the new member (e.g. "claude", "codex").
+            Empty string uses the default adapter.
 
     Returns:
         {warroom_id, added: {warroom_member_id, role, tmux_target, pane_id, ...}, member_count}
     """
-    return warroom.add(name=name, agent=agent, cwd=cwd)
+    return warroom.add(name=name, agent=agent, cwd=cwd, runtime=runtime)
 
 
 @mcp.tool()
