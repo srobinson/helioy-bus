@@ -43,9 +43,13 @@ run_resolve() {
     done
     (
         cd "$workdir"
-        for pair in "${exports[@]}"; do
-            export "${pair?}"
-        done
+        # Guard against bash 3.2 (macOS default): "${arr[@]}" on an empty
+        # array triggers "unbound variable" under `set -u`.
+        if [[ ${#exports[@]} -gt 0 ]]; then
+            for pair in "${exports[@]}"; do
+                export "${pair?}"
+            done
+        fi
         # Ensure no tmux inheritance from caller
         unset TMUX TMUX_PANE 2>/dev/null || true
         source "$LIB"
