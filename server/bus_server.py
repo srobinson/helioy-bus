@@ -115,6 +115,15 @@ def register_agent(
     profile_json = json.dumps(profile) if profile else None
 
     with db() as conn:
+        # Pane eviction: a tmux pane hosts at most one Claude process at a
+        # time, so any prior row claiming our tmux_target is stale by
+        # definition. Evicting here is not PID-based liveness guessing — it
+        # is an ownership assertion from the new occupant.
+        if tmux_target:
+            conn.execute(
+                "DELETE FROM agents WHERE tmux_target = ? AND agent_id != ?",
+                (tmux_target, agent_id),
+            )
         conn.execute(
             """
             INSERT OR REPLACE INTO agents

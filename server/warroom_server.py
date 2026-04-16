@@ -205,6 +205,14 @@ def warroom_spawn_repos(
         "tmux_window": window,
         "members": members,
         "spawned_at": now,
+        "messaging": {
+            "instruction": (
+                "Send messages to warroom members individually by agent_id. "
+                "Never use to:'*' or reply_to:'*' as these broadcast to every "
+                "agent on the bus, not just this warroom. Use warroom_status to "
+                "discover agent_ids once members register."
+            ),
+        },
     }
     if spawn_errors:
         result["errors"] = spawn_errors
@@ -334,11 +342,24 @@ def warroom_spawn(
                 (name, m["qualified_name"], m["tmux_target"], m["pane_id"], now),
             )
 
+    # Build agent_id list for messaging guidance (agents register async,
+    # so these are predicted IDs based on spawn convention).
+    member_types = [m["qualified_name"] or m["agent_type"] for m in members]
+
     result = {
         "warroom_id": name,
         "tmux_window": name,
         "members": members,
         "spawned_at": now,
+        "messaging": {
+            "instruction": (
+                "Send messages to warroom members individually by agent_id. "
+                "Never use to:'*' or reply_to:'*' as these broadcast to every "
+                "agent on the bus, not just this warroom. Use warroom_status to "
+                "discover agent_ids once members register."
+            ),
+            "member_types": member_types,
+        },
     }
     if spawn_errors:
         result["errors"] = spawn_errors

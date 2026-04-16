@@ -112,6 +112,17 @@ inbox.mkdir(parents=True, exist_ok=True)
 # Bootstrap schema (idempotent) and register in one transaction.
 # Use parent PID (Claude Code process), not this subprocess PID.
 with db() as conn:
+    # Pane eviction: a tmux pane hosts at most one Claude process at a time,
+    # so any prior row claiming our tmux_target is stale by definition.
+    # This is an ownership assertion from the new occupant, not PID-based
+    # liveness guessing.
+    tmux_target = os.environ["_HELIOY_TMUX"]
+    agent_id = os.environ["_HELIOY_AGENT_ID"]
+    if tmux_target:
+        conn.execute(
+            "DELETE FROM agents WHERE tmux_target = ? AND agent_id != ?",
+            (tmux_target, agent_id),
+        )
     conn.execute(
         """
         INSERT OR REPLACE INTO agents
@@ -119,9 +130,9 @@ with db() as conn:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            os.environ["_HELIOY_AGENT_ID"],
+            agent_id,
             os.environ["_HELIOY_PWD"],
-            os.environ["_HELIOY_TMUX"],
+            tmux_target,
             int(os.environ["_HELIOY_PID"]),
             os.environ.get("_HELIOY_SESSION_ID", ""),
             os.environ.get("_HELIOY_AGENT_TYPE", "general"),

@@ -47,6 +47,55 @@ def test_register_creates_inbox(tmp_path):
     assert inbox.is_dir()
 
 
+def test_register_evicts_prior_pane_occupant():
+    """A tmux pane hosts at most one Claude process. Registering a new
+    agent at a tmux_target already claimed by another row must evict
+    the prior occupant, since pane ownership is exclusive by definition."""
+    import server.bus_server as bm
+
+    # First occupant of pane 8:1.1
+    bm.register_agent(
+        pwd="/tmp/helioy-plugins",
+        tmux_target="8:1.1",
+        agent_id="helioy-plugins:general:8:1.1",
+    )
+    # Second occupant of the same pane (different CWD → different agent_id)
+    bm.register_agent(
+        pwd="/tmp/helioy",
+        tmux_target="8:1.1",
+        agent_id="helioy:general:8:1.1",
+    )
+
+    agents = bm.list_agents()
+    ids = [a["agent_id"] for a in agents]
+    assert ids == ["helioy:general:8:1.1"], (
+        f"Expected only the new occupant, got {ids}"
+    )
+
+
+def test_register_does_not_evict_different_pane():
+    """Agents on different tmux_targets coexist — eviction is pane-scoped."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/a", tmux_target="8:1.1", agent_id="a:8:1.1")
+    bm.register_agent(pwd="/tmp/b", tmux_target="8:1.2", agent_id="b:8:1.2")
+
+    ids = sorted(a["agent_id"] for a in bm.list_agents())
+    assert ids == ["a:8:1.1", "b:8:1.2"]
+
+
+def test_register_does_not_evict_empty_tmux_target():
+    """Non-tmux agents (tmux_target='') must be allowed to coexist —
+    the empty string is not a pane identity and eviction must not fire."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/a", agent_id="a")
+    bm.register_agent(pwd="/tmp/b", agent_id="b")
+
+    ids = sorted(agent["agent_id"] for agent in bm.list_agents())
+    assert ids == ["a", "b"]
+
+
 def test_list_agents_empty():
     import server.bus_server as bm
 

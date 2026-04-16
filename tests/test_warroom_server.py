@@ -362,6 +362,73 @@ def test_warroom_spawn_with_mocked_tmux(fake_plugins, monkeypatch):
         assert len(members) == 2
 
 
+def test_warroom_spawn_includes_messaging_guidance(fake_plugins, monkeypatch):
+    """Spawn response includes messaging guidance discouraging broadcast."""
+    import server.warroom_server as wm
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+    monkeypatch.setattr(wm, "_tmux_check", lambda *a: "main")
+    monkeypatch.setattr(wm, "_spawn_pane", lambda **kw: {
+        "agent_type": kw["agent_type"],
+        "qualified_name": kw["qualified_name"],
+        "tmux_target": f"main:1.{0 if kw['is_first'] else 1}",
+        "pane_id": f"%{42 + (0 if kw['is_first'] else 1)}",
+    })
+
+    result = wm.warroom_spawn(
+        name="msg-test",
+        agents=["backend-engineer", "frontend-engineer"],
+        cwd="/tmp/project",
+    )
+
+    assert "messaging" in result
+    msg = result["messaging"]
+    assert "Never use" in msg["instruction"]
+    assert "*" in msg["instruction"]
+    assert "warroom_status" in msg["instruction"]
+    assert msg["member_types"] == [
+        "helioy-tools:backend-engineer",
+        "helioy-tools:frontend-engineer",
+    ]
+
+
+def test_warroom_spawn_repos_includes_messaging_guidance(monkeypatch, tmp_path):
+    """Repo-mode spawn response includes messaging guidance."""
+    import server.warroom_server as wm
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+    monkeypatch.setattr(wm, "_tmux_check", lambda *a: "main")
+
+    # Create two fake git repos
+    for name in ("repo-a", "repo-b"):
+        repo = tmp_path / name
+        repo.mkdir()
+        (repo / ".git").mkdir()
+
+    monkeypatch.setenv("HELIOY_BASE", str(tmp_path))
+
+    pane_counter = [0]
+
+    def mock_spawn_pane(**kw):
+        idx = pane_counter[0]
+        pane_counter[0] += 1
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw.get("qualified_name"),
+            "tmux_target": f"main:1.{idx}",
+            "pane_id": f"%{idx}",
+        }
+
+    monkeypatch.setattr(wm, "_spawn_pane", mock_spawn_pane)
+
+    result = wm.warroom_spawn_repos(window="repo-wr")
+
+    assert "messaging" in result
+    msg = result["messaging"]
+    assert "Never use" in msg["instruction"]
+    assert "*" in msg["instruction"]
+
+
 # ── Warroom: warroom_kill ────────────────────────────────────────────────────
 
 
