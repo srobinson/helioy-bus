@@ -54,10 +54,11 @@ def warroom_spawn_repos(
     window: str = "warroom",
     layout: str = "tiled",
 ) -> dict:
-    """Spawn one general Claude agent per helioy repo in a single tmux window.
+    """Spawn one general-role agent per helioy repo in a single tmux window.
 
-    Repo-mode: each pane runs in the repo's directory without a specific agent
-    type (equivalent to running `claude --dangerously-skip-permissions`).
+    Repo-mode: each pane runs in the repo's directory without a specialist
+    role. The concrete launch command is supplied by the active runtime
+    adapter (Claude while it is the incumbent runtime).
 
     Repos are discovered by scanning HELIOY_BASE for subdirectories that
     contain a .git folder. Uses HELIOY_BASE env var (default:
@@ -81,7 +82,7 @@ def warroom_spawn(
     cwd: str = "",
     layout: str = "tiled",
 ) -> dict:
-    """Create a warroom: a tmux window with one Claude Code pane per agent type.
+    """Create a warroom: a tmux window with one runtime pane per agent type.
 
     Idempotent: kills any existing warroom with the same name first. Validates
     all agent types before spawning any panes. Returns immediately without
@@ -149,9 +150,9 @@ def warroom_add(
 ) -> dict:
     """Add an agent to an existing warroom.
 
-    Splits a new pane in the warroom's tmux window and launches Claude Code
-    with the specified agent type. Duplicate roles are allowed: each call
-    creates a new stable member record.
+    Splits a new pane in the warroom's tmux window and launches the active
+    runtime with the specified agent type. Duplicate roles are allowed: each
+    call creates a new stable member record.
 
     Args:
         name: Warroom identifier.

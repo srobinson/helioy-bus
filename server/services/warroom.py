@@ -17,6 +17,7 @@ from pathlib import Path
 from server import _db
 from server._tmux import gateway
 from server._warroom import _resolve_agent_type, _scan_agent_types
+from server.runtimes import default_adapter
 
 VALID_LAYOUTS = {
     "tiled", "even-horizontal", "even-vertical",
@@ -104,7 +105,7 @@ def discover(*, query: str = "", namespace: str = "", limit: int = 20) -> dict:
 
 
 def spawn_repos(*, window: str = "warroom", layout: str = "tiled") -> dict:
-    """Spawn one general Claude agent per helioy repo in a single tmux window."""
+    """Spawn one general-role agent per helioy repo in a single tmux window."""
     if not os.environ.get("TMUX"):
         return {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
 
@@ -149,6 +150,7 @@ def spawn_repos(*, window: str = "warroom", layout: str = "tiled") -> dict:
                VALUES (?, ?, ?, ?, ?, 'active')""",
             (window, session, window, str(base), now),
         )
+        runtime_id = default_adapter().runtime_id
         for order, m in enumerate(members):
             role = m["qualified_name"] or m["agent_type"] or "general"
             member_id = _db._new_member_id()
@@ -156,8 +158,8 @@ def spawn_repos(*, window: str = "warroom", layout: str = "tiled") -> dict:
                 """INSERT INTO warroom_members
                    (warroom_member_id, warroom_id, runtime, role, repo,
                     spawn_order, tmux_target, pane_id, agent_id, spawned_at)
-                   VALUES (?, ?, 'claude', ?, ?, ?, ?, ?, NULL, ?)""",
-                (member_id, window, role, m["repo"], order,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
+                (member_id, window, runtime_id, role, m["repo"], order,
                  m["tmux_target"], m["pane_id"], now),
             )
             m["warroom_member_id"] = member_id
@@ -183,7 +185,7 @@ def spawn(
     cwd: str = "",
     layout: str = "tiled",
 ) -> dict:
-    """Create a named warroom with one Claude pane per agent type."""
+    """Create a named warroom with one runtime pane per agent type."""
     if not name or not WARROOM_NAME_RE.match(name):
         return {
             "error": "Name must be 1-30 chars, alphanumeric and hyphens, "
@@ -255,14 +257,15 @@ def spawn(
                VALUES (?, ?, ?, ?, ?, 'active')""",
             (name, session, name, cwd, now),
         )
+        runtime_id = default_adapter().runtime_id
         for order, m in enumerate(members):
             member_id = _db._new_member_id()
             conn.execute(
                 """INSERT INTO warroom_members
                    (warroom_member_id, warroom_id, runtime, role, repo,
                     spawn_order, tmux_target, pane_id, agent_id, spawned_at)
-                   VALUES (?, ?, 'claude', ?, NULL, ?, ?, ?, NULL, ?)""",
-                (member_id, name, m["qualified_name"], order,
+                   VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)""",
+                (member_id, name, runtime_id, m["qualified_name"], order,
                  m["tmux_target"], m["pane_id"], now),
             )
             m["warroom_member_id"] = member_id
@@ -416,8 +419,8 @@ def add(*, name: str, agent: str, cwd: str = "") -> dict:
             """INSERT INTO warroom_members
                (warroom_member_id, warroom_id, runtime, role, repo,
                 spawn_order, tmux_target, pane_id, agent_id, spawned_at)
-               VALUES (?, ?, 'claude', ?, NULL, ?, ?, ?, NULL, ?)""",
-            (member_id, name, qn, next_order,
+               VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)""",
+            (member_id, name, default_adapter().runtime_id, qn, next_order,
              pane_info["tmux_target"], pane_info["pane_id"], now),
         )
         count = conn.execute(

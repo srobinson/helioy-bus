@@ -73,7 +73,7 @@ def prune_archived_messages(agent_id: str, *, max_age_days: int = 7) -> int:
 def backfill_warroom_member_agent_ids(warroom_id: str = "") -> int:
     """Fill in `warroom_members.agent_id` from the agents table.
 
-    Members spawn before their Claude process registers on the bus, so
+    Members spawn before their runtime process registers on the bus, so
     `agent_id` lands NULL initially. Once a registration arrives whose
     `tmux_target` matches a member, this writes the agent_id back into
     the member row.

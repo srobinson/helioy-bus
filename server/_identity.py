@@ -37,6 +37,7 @@ import subprocess
 from pathlib import Path
 
 from server import _db
+from server.runtimes import default_adapter
 
 # Path to the authoritative shell resolver.
 # Works in development / editable-install layouts where server/ and plugin/
@@ -81,7 +82,8 @@ def _self_agent_id() -> str:
     divergence.
     """
     pids_dir = _db.BUS_DIR / "pids"
-    for pid in filter(None, [os.environ.get("HELIOY_BUS_CLAUDE_PID"), str(os.getppid())]):
+    self_pid_env = default_adapter().self_pid_env
+    for pid in filter(None, [os.environ.get(self_pid_env), str(os.getppid())]):
         pid_file = pids_dir / pid
         if pid_file.exists():
             resolved = pid_file.read_text().strip()
@@ -118,7 +120,7 @@ def _self_agent_id() -> str:
     resolved = canonical_agent_id(os.getcwd(), agent_type, tmux_target)
     _db._dbg(
         f"_self_agent_id: no pid file, shell resolver unavailable "
-        f"(HELIOY_BUS_CLAUDE_PID={os.environ.get('HELIOY_BUS_CLAUDE_PID')!r} "
+        f"({self_pid_env}={os.environ.get(self_pid_env)!r} "
         f"ppid={os.getppid()}) \u2192 {resolved!r}"
     )
     return resolved

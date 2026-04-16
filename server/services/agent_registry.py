@@ -43,7 +43,7 @@ def register(
 ) -> dict:
     """Insert or replace an agent registration.
 
-    Pane eviction: a tmux pane hosts at most one Claude process at a
+    Pane eviction: a tmux pane hosts at most one runtime process at a
     time, so any prior row claiming our tmux_target is stale by
     definition. Evicting here is an ownership assertion from the new
     occupant, not PID-based liveness guessing.

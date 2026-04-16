@@ -15,7 +15,6 @@ BUS_DIR = Path.home() / ".helioy" / "bus"
 REGISTRY_DB = BUS_DIR / "registry.db"
 INBOX_DIR = BUS_DIR / "inbox"
 PRESETS_DIR = BUS_DIR / "presets"
-PLUGINS_CACHE = Path.home() / ".claude" / "plugins" / "cache"
 
 LOG_FILE = Path("/tmp/helioy-bus-debug.log")
 

@@ -91,8 +91,8 @@ def test_scan_agent_types_cached(fake_plugins):
 
 def test_scan_agent_types_deduplicates_versions(tmp_path, monkeypatch):
     """When multiple versions of the same plugin exist, keeps the newest."""
-    import server._db as _db_mod
     import server._warroom as wr
+    from server.runtimes.claude import CLAUDE
 
     cache = tmp_path / "cache"
     old = cache / "org" / "myplugin" / "v1" / "agents"
@@ -109,7 +109,7 @@ def test_scan_agent_types_deduplicates_versions(tmp_path, monkeypatch):
         '---\nname: my-agent\ndescription: "new"\nmodel: opus\n---\n'
     )
 
-    monkeypatch.setattr(_db_mod, "PLUGINS_CACHE", cache)
+    monkeypatch.setattr(CLAUDE, "agents_cache_dir", lambda: cache)
     wr._agent_types_cache.clear()
     wr._agent_types_cache_ts = 0.0
 

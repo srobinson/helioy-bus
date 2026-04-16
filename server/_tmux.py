@@ -15,6 +15,7 @@ import os
 import subprocess
 
 from server import _db
+from server.runtimes import default_adapter
 
 # ── TmuxGateway: the only place that runs subprocess.run(["tmux", ...]) ──────
 
@@ -100,7 +101,7 @@ class TmuxGateway:
     # --- nudging ---
 
     def nudge(self, tmux_target: str) -> bool:
-        """Send a 'you have mail!' keystroke to wake an idle Claude session.
+        """Send a 'you have mail!' keystroke to wake an idle agent session.
 
         Exits copy-mode first if the pane is in it, then sends literal text
         followed by Enter as a separate key.
@@ -141,13 +142,17 @@ class TmuxGateway:
         is_first: bool,
         layout: str,
     ) -> dict:
-        """Create a single tmux pane running a Claude Code agent.
+        """Create a single tmux pane running a runtime agent.
 
         Returns a dict with tmux_target, pane_id, agent_type, and
         qualified_name. The ordering contract: pane title is set BEFORE
-        send-keys so identity resolution works when the SessionStart hook
-        fires. When qualified_name is None, spawns a general Claude session
-        without --agent (repo-mode).
+        send-keys so identity resolution works when the runtime's
+        startup hook fires. When qualified_name is None, spawns a
+        general session without a specialist role (repo-mode).
+
+        The concrete launch command comes from the active
+        :class:`~server.runtimes.base.RuntimeAdapter`; this gateway
+        stays runtime-agnostic.
         """
         repo = os.path.basename(cwd)
 
@@ -169,7 +174,8 @@ class TmuxGateway:
             "-p", "#{session_name}:#{window_index}.#{pane_index}",
         )
 
-        # Set pane title BEFORE launching claude (identity resolution depends on this)
+        # Pane title must be set BEFORE launching the runtime: the
+        # runtime's SessionStart hook reads it to resolve identity.
         display_name = qualified_name if qualified_name is not None else agent_type
         identity = f"{repo}:{display_name}:{tmux_target}"
         self._run("select-pane", "-t", pane_id, "-T", identity)
@@ -180,15 +186,7 @@ class TmuxGateway:
                 "allow-rename", "off",
             )
 
-        # --dangerously-skip-permissions lets warroom agents run without
-        # interactive permission prompts.
-        if qualified_name is not None:
-            cmd = (
-                f"claude --dangerously-skip-permissions --model opus "
-                f"--effort max --agent {qualified_name}"
-            )
-        else:
-            cmd = "claude --dangerously-skip-permissions --model opus --effort max"
+        cmd = default_adapter().build_launch_command(qualified_name=qualified_name)
         self._run("send-keys", "-t", pane_id, cmd, "Enter")
 
         self._run("select-layout", "-t", f"{session}:{window}", layout)

@@ -45,7 +45,9 @@ class HotReloadProxy:
 
     async def _spawn(self) -> None:
         import os
-        env = {**os.environ, "HELIOY_BUS_CLAUDE_PID": str(os.getppid())}
+
+        from server.runtimes import default_adapter
+        env = {**os.environ, default_adapter().self_pid_env: str(os.getppid())}
         self.proc = await asyncio.create_subprocess_exec(
             PYTHON, str(self.server_script),
             stdin=asyncio.subprocess.PIPE,

@@ -47,8 +47,8 @@ def set_sender(monkeypatch):
 @pytest.fixture()
 def fake_plugins(tmp_path, monkeypatch):
     """Create a fake plugin cache with known agent definitions."""
-    import server._db as _db_mod
     import server._warroom as wr
+    from server.runtimes.claude import CLAUDE
 
     cache = tmp_path / "plugins" / "cache"
 
@@ -76,7 +76,7 @@ def fake_plugins(tmp_path, monkeypatch):
         '---\nname: backend-engineer\ndescription: "Voltagent backend"\nmodel: sonnet\n---\n'
     )
 
-    monkeypatch.setattr(_db_mod, "PLUGINS_CACHE", cache)
+    monkeypatch.setattr(CLAUDE, "agents_cache_dir", lambda: cache)
     # Clear cache so tests see fresh state
     wr._agent_types_cache.clear()
     wr._agent_types_cache_ts = 0.0

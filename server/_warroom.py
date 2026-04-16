@@ -6,7 +6,7 @@ import re
 import time
 from pathlib import Path
 
-from server import _db
+from server.runtimes import default_adapter
 
 # In-memory cache for agent type scanning
 _agent_types_cache: list[dict] = []
@@ -55,7 +55,7 @@ def _scan_agent_types() -> list[dict]:
     # Discover all agents directories at any depth under the plugin cache
     agents: dict[str, dict] = {}  # keyed by qualified_name for dedup
 
-    plugins_cache = _db.PLUGINS_CACHE
+    plugins_cache = default_adapter().agents_cache_dir()
     if not plugins_cache.is_dir():
         _agent_types_cache = []
         _agent_types_cache_ts = now
