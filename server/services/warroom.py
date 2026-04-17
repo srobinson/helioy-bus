@@ -17,6 +17,12 @@ from pathlib import Path
 from server import _db
 from server._tmux import gateway
 from server._warroom import _resolve_agent_type, _scan_agent_types
+from server._warroom_persist import (
+    insert_warroom_member,
+    resolve_tmux_session,
+    tag_member_pane,
+    upsert_warroom,
+)
 from server.runtimes import (
     RuntimeAdapter,
     default_adapter,
@@ -180,12 +186,10 @@ def spawn_repos(
     runtime: str = "",
 ) -> dict:
     """Spawn one general-role agent per helioy repo in a single tmux window."""
-    if not os.environ.get("TMUX"):
-        return {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
-
-    session = gateway.current_session_name()
-    if session is None:
-        return {"error": "Cannot determine tmux session"}
+    session, err = resolve_tmux_session()
+    if err:
+        return err
+    assert session is not None
 
     adapter, err = _resolve_runtime(runtime)
     if err:
@@ -225,29 +229,35 @@ def spawn_repos(
             spawn_errors.append({"repo": repo_path.name, "error": str(e)})
 
     with _db.db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO warrooms
-               (warroom_id, tmux_session, tmux_window, cwd, layout,
-                runtime_policy, metadata, created_at, status)
-               VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 'active')""",
-            (window, session, window, str(base), layout, now),
+        upsert_warroom(
+            conn,
+            warroom_id=window,
+            session=session,
+            window=window,
+            cwd=str(base),
+            layout=layout,
+            now=now,
         )
         for order, m in enumerate(members):
             role = m["qualified_name"] or m["agent_type"] or "general"
-            member_id = _db._new_member_id()
-            conn.execute(
-                """INSERT INTO warroom_members
-                   (warroom_member_id, warroom_id, desired_runtime, desired_role,
-                    desired_repo, state, agent_instance_id, spawn_order,
-                    tmux_target, pane_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, ?, ?)""",
-                (member_id, window, runtime_id, role, m["desired_repo"], order,
-                 m["tmux_target"], m["pane_id"], now, now),
+            member_id = insert_warroom_member(
+                conn,
+                warroom_id=window,
+                runtime_id=runtime_id,
+                desired_role=role,
+                desired_repo=m["desired_repo"],
+                spawn_order=order,
+                tmux_target=m["tmux_target"],
+                pane_id=m["pane_id"],
+                now=now,
             )
-            m["warroom_member_id"] = member_id
-            m["desired_role"] = role
-            m["desired_runtime"] = runtime_id
-            m["spawn_order"] = order
+            tag_member_pane(
+                m,
+                warroom_member_id=member_id,
+                desired_role=role,
+                desired_runtime=runtime_id,
+                spawn_order=order,
+            )
 
     result: dict = {
         "warroom_id": window,
@@ -282,12 +292,10 @@ def spawn(
     if layout not in VALID_LAYOUTS:
         return {"error": f"Invalid layout. Choose from: {', '.join(sorted(VALID_LAYOUTS))}"}
 
-    if not os.environ.get("TMUX", ""):
-        return {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
-
-    session = gateway.current_session_name()
-    if session is None:
-        return {"error": "Cannot determine tmux session"}
+    session, err = resolve_tmux_session()
+    if err:
+        return err
+    assert session is not None
 
     adapter, err = _resolve_runtime(runtime)
     if err:
@@ -344,28 +352,35 @@ def spawn(
             })
 
     with _db.db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO warrooms
-               (warroom_id, tmux_session, tmux_window, cwd, layout,
-                runtime_policy, metadata, created_at, status)
-               VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 'active')""",
-            (name, session, name, cwd, layout, now),
+        upsert_warroom(
+            conn,
+            warroom_id=name,
+            session=session,
+            window=name,
+            cwd=cwd,
+            layout=layout,
+            now=now,
         )
         for order, m in enumerate(members):
-            member_id = _db._new_member_id()
-            conn.execute(
-                """INSERT INTO warroom_members
-                   (warroom_member_id, warroom_id, desired_runtime, desired_role,
-                    desired_repo, state, agent_instance_id, spawn_order,
-                    tmux_target, pane_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, NULL, 'pending', NULL, ?, ?, ?, ?, ?)""",
-                (member_id, name, runtime_id, m["qualified_name"], order,
-                 m["tmux_target"], m["pane_id"], now, now),
+            qn = m["qualified_name"]
+            member_id = insert_warroom_member(
+                conn,
+                warroom_id=name,
+                runtime_id=runtime_id,
+                desired_role=qn,
+                desired_repo=None,
+                spawn_order=order,
+                tmux_target=m["tmux_target"],
+                pane_id=m["pane_id"],
+                now=now,
             )
-            m["warroom_member_id"] = member_id
-            m["desired_role"] = m["qualified_name"]
-            m["desired_runtime"] = runtime_id
-            m["spawn_order"] = order
+            tag_member_pane(
+                m,
+                warroom_member_id=member_id,
+                desired_role=qn,
+                desired_runtime=runtime_id,
+                spawn_order=order,
+            )
 
     member_types = [m["qualified_name"] or m["agent_type"] for m in members]
 
@@ -526,24 +541,28 @@ def add(*, name: str, agent: str, cwd: str = "", runtime: str = "") -> dict:
             return {"error": f"Spawn failed: {e}"}
 
         now = _db._now()
-        member_id = _db._new_member_id()
-        conn.execute(
-            """INSERT INTO warroom_members
-               (warroom_member_id, warroom_id, desired_runtime, desired_role,
-                desired_repo, state, agent_instance_id, spawn_order,
-                tmux_target, pane_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, NULL, 'pending', NULL, ?, ?, ?, ?, ?)""",
-            (member_id, name, runtime_id, qn, next_order,
-             pane_info["tmux_target"], pane_info["pane_id"], now, now),
+        member_id = insert_warroom_member(
+            conn,
+            warroom_id=name,
+            runtime_id=runtime_id,
+            desired_role=qn,
+            desired_repo=None,
+            spawn_order=next_order,
+            tmux_target=pane_info["tmux_target"],
+            pane_id=pane_info["pane_id"],
+            now=now,
         )
         count = conn.execute(
             "SELECT COUNT(*) FROM warroom_members WHERE warroom_id = ?", (name,)
         ).fetchone()[0]
 
-    pane_info["warroom_member_id"] = member_id
-    pane_info["desired_role"] = qn
-    pane_info["desired_runtime"] = runtime_id
-    pane_info["spawn_order"] = next_order
+    tag_member_pane(
+        pane_info,
+        warroom_member_id=member_id,
+        desired_role=qn,
+        desired_runtime=runtime_id,
+        spawn_order=next_order,
+    )
     return {
         "warroom_id": name,
         "added": pane_info,
