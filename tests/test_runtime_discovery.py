@@ -161,8 +161,8 @@ def test_resolve_agent_type_scopes_to_codex_catalogue(
 ):
     """The mirror of ``_resolve_agent_type`` scoping to Codex-only skills.
 
-    ALP-1796 bars codex-specialist spawn at the service boundary, so
-    this check drops below the service layer and asserts the underlying
+    The service layer bars codex-specialist spawn at the service boundary,
+    so this check drops below the service layer and asserts the underlying
     scoping mechanism directly: ``_resolve_agent_type(name, 'codex')``
     with a Codex-only skill name returns a Codex-tagged descriptor.
     """

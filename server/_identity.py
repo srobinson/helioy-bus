@@ -77,7 +77,7 @@ def _self_agent_id() -> str:
     to produce a consistent identity when the PID file is absent. Only fires
     in edge cases (e.g. MCP server started before the SessionStart hook ran).
 
-    Last resort: ``canonical_agent_id()`` — produces the same shape every
+    Last resort: ``canonical_agent_id()`` produces the same shape every
     other path produces, so availability never comes at the cost of identity
     divergence.
     """

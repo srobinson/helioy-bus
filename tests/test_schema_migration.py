@@ -116,7 +116,7 @@ def test_warroom_members_intermediate_schema_migrates():
 
 
 def test_warrooms_adds_layout_runtime_policy_metadata_columns():
-    """Pre-ALP-1801 warrooms rows gain the new spec columns with safe defaults."""
+    """Legacy warrooms rows gain the new spec columns with safe defaults."""
     import server._db as _db_mod
     from server._db import REGISTRY_DB, _now, db
 

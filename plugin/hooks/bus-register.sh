@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bus-register.sh — SessionStart hook for helioy-bus
+# bus-register.sh: SessionStart hook for helioy-bus
 #
 # Registers this Claude Code instance directly into the bus SQLite registry.
 # Uses direct DB writes to avoid MCP subprocess overhead in lifecycle hooks.
@@ -70,8 +70,8 @@ fi
 unset _BASH_SOURCE_ROOT
 
 # Write directly to SQLite via _db.py (single source of truth for schema).
-# All values passed through environment variables — never interpolated
-# into Python source — to prevent injection when paths contain special chars.
+# All values passed through environment variables, never interpolated
+# into Python source, to prevent injection when paths contain special chars.
 LOG_DIR="$BUS_DIR/logs"
 mkdir -p "$LOG_DIR"
 PY_STDERR=$(mktemp)

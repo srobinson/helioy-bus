@@ -9,7 +9,7 @@ connection. Claude Code never sees a disconnect.
              ◀──stdout── [proxy] ◀──stdout──
 
 On file change:
-  1. Set restarting flag — buffer all incoming messages
+  1. Set restarting flag, buffer all incoming messages
   2. Kill inner server
   3. Spawn fresh inner server
   4. Replay captured initialize request, discard inner response
@@ -40,7 +40,7 @@ def build_inner_env(environ: Mapping[str, str], parent_pid: int) -> dict[str, st
 
     When a wrapper (e.g. ``codex-launch.sh``) has already exported its
     runtime's PID env, preserve it. When nothing upstream has, fall back
-    to the default adapter and seed its env var with the parent PID —
+    to the default adapter and seed its env var with the parent PID,
     the historical Claude-only path.
     """
     from server.runtimes import default_adapter, registered_adapters
@@ -82,7 +82,7 @@ class HotReloadProxy:
         # Send initialize to new inner server
         self.proc.stdin.write(self.init_line)
         await self.proc.stdin.drain()
-        # Discard inner server's initialize response — outer client already got one
+        # Discard inner server's initialize response; outer client already got one
         await self.proc.stdout.readline()
         # Complete the inner handshake
         notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
@@ -91,7 +91,7 @@ class HotReloadProxy:
 
     async def _restart(self) -> None:
         self._restarting = True
-        _log("file changed — restarting inner server")
+        _log("file changed, restarting inner server")
         if self.proc and self.proc.returncode is None:
             self.proc.kill()
             await self.proc.wait()

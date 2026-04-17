@@ -22,7 +22,7 @@ def test_register_agent_basic():
 
 def test_register_agent_with_tmux_target_uses_compound_id():
     """Auto-derivation with tmux produces the full 4-segment canonical form
-    including agent_type — never {basename}:{tmux_target} alone."""
+    including agent_type, never {basename}:{tmux_target} alone."""
     import server.bus_server as bm
 
     result = bm.register_agent(pwd="/tmp/myproject", tmux_target="7:1.2")
@@ -84,7 +84,7 @@ def test_register_evicts_prior_pane_occupant():
 
 
 def test_register_does_not_evict_different_pane():
-    """Agents on different tmux_targets coexist — eviction is pane-scoped."""
+    """Agents on different tmux_targets coexist; eviction is pane-scoped."""
     import server.bus_server as bm
 
     bm.register_agent(pwd="/tmp/a", tmux_target="8:1.1", agent_id="a:8:1.1")
@@ -95,7 +95,7 @@ def test_register_does_not_evict_different_pane():
 
 
 def test_register_does_not_evict_empty_tmux_target():
-    """Non-tmux agents (tmux_target='') must be allowed to coexist —
+    """Non-tmux agents (tmux_target='') must be allowed to coexist;
     the empty string is not a pane identity and eviction must not fire."""
     import server.bus_server as bm
 

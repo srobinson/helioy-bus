@@ -6,7 +6,7 @@ the repo's 700-line threshold. This module pins:
 * every adapter returns a ``LifecycleIntegration`` whose scripts actually
   exist on disk (catches ``plugin/hooks/`` rename drift)
 * Codex explicitly declares no usage-capture script and ``capture_usage``
-  returns ``None`` — the two signals agree by contract
+  returns ``None``; the two signals agree by contract
 * Claude's ``capture_usage`` extractor stays in lockstep with the grep
   pipeline in ``plugin/hooks/token-capture.sh``
 """
@@ -69,7 +69,7 @@ def test_claude_declares_token_capture_as_usage_script():
 
 
 def test_codex_lifecycle_integration_declares_wrapper_kind():
-    """Codex has no plugin hook system — registration is wrapper-driven."""
+    """Codex has no plugin hook system; registration is wrapper-driven."""
     assert CODEX.lifecycle_integration().registration_kind == "wrapper"
 
 

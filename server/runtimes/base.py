@@ -33,14 +33,14 @@ class LifecycleIntegration:
         teardown (end of session, trap on wrapper exit, ...).
       usage_capture_script: Optional executable that samples runtime
         usage metrics (token counts, cost) and writes them to the
-        registry. ``None`` when the runtime has no such mechanism —
+        registry. ``None`` when the runtime has no such mechanism.
         Codex has no tmux-visible token counter, so it declares
         ``None`` rather than borrowing Claude's script.
       registration_kind: How the runtime triggers the scripts:
 
-        * ``"hook"`` — the runtime's plugin system invokes the scripts
+        * ``"hook"``: the runtime's plugin system invokes the scripts
           directly on SessionStart / SessionEnd (Claude).
-        * ``"wrapper"`` — an adapter-provided launch wrapper invokes
+        * ``"wrapper"``: an adapter-provided launch wrapper invokes
           the startup script up front and installs a trap for the
           shutdown script (Codex).
     """
@@ -109,15 +109,15 @@ class RuntimeAdapter(Protocol):
 
         The return value is a list of dicts with the fields:
 
-          * ``qualified_name`` — ``{namespace}:{name}``, unique within the
+          * ``qualified_name``: ``{namespace}:{name}``, unique within the
             catalogue returned by this adapter
-          * ``name`` — short name
-          * ``namespace`` — logical group (plugin name, skill scope, ...)
-          * ``summary`` — human-readable description, truncated to <=200
+          * ``name``: short name
+          * ``namespace``: logical group (plugin name, skill scope, ...)
+          * ``summary``: human-readable description, truncated to <=200
             characters
-          * ``model`` — optional model hint from frontmatter, or empty
+          * ``model``: optional model hint from frontmatter, or empty
             string if absent
-          * ``runtime`` — this adapter's :attr:`runtime_id`
+          * ``runtime``: this adapter's :attr:`runtime_id`
 
         Returned dicts contain no adapter-internal fields (e.g. mtime)
         and the list is sorted by ``qualified_name``. An adapter whose

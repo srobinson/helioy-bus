@@ -6,7 +6,7 @@ peer, the real token-capture hook updates token_usage, the peer reads
 and archives the message, and the SessionEnd hook cleans up.
 
 If any boundary between the shell hooks, the Python services, and the
-SQLite registry is wrong, this test fails — catching failures that the
+SQLite registry is wrong, this test fails, catching failures that the
 in-process handler tests cannot see because they bypass the hooks.
 """
 
@@ -121,7 +121,7 @@ def test_full_lifecycle_smoke(isolated_bus, set_sender, tmp_path):
     assert info["token_usage"]["tokens"] == 4242
     assert info["token_usage"]["updated"].endswith("Z")
 
-    # 6. Peer reads the message — unread surfaces, archive happens.
+    # 6. Peer reads the message: unread surfaces, archive happens.
     msgs = bm.get_messages(agent_id=PEER_AGENT_ID)
     assert len(msgs) == 1
     assert msgs[0]["content"] == "hello from smoke"

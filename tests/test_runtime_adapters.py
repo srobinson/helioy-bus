@@ -36,7 +36,7 @@ def test_claude_adapter_agents_cache_dir_points_to_claude_plugin_cache():
 
 
 def test_claude_adapter_satisfies_runtime_adapter_protocol():
-    """Protocol check — catches missing/rename-drifted members at import time."""
+    """Protocol check: catches missing/rename-drifted members at import time."""
     assert isinstance(CLAUDE, RuntimeAdapter)
 
 
@@ -476,7 +476,7 @@ def test_warroom_spawn_rejects_unknown_runtime(monkeypatch):
     assert "codex" in result["error"]
 
 
-# ── Specialist-role capability (ALP-1796) ────────────────────────────────────
+# ── Specialist-role capability ───────────────────────────────────────────────
 
 
 def test_claude_adapter_supports_specialist_roles_is_true():

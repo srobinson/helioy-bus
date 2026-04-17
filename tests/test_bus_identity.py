@@ -1,9 +1,9 @@
-"""Identity tests: canonical agent-id contract (ALP-1786), _self_agent_id, whoami token_usage."""
+"""Identity tests: canonical agent-id contract, _self_agent_id, whoami token_usage."""
 
 from __future__ import annotations
 
 
-# ── Canonical identity contract (ALP-1786) ────────────────────────────────────
+# ── Canonical identity contract ───────────────────────────────────────────────
 
 
 def test_canonical_agent_id_shape_without_tmux():
@@ -45,7 +45,7 @@ def test_canonical_agent_id_empty_cwd_becomes_unknown():
 
 
 def test_canonical_agent_id_empty_type_defaults_to_general():
-    """Empty agent_type defaults to 'general' — never produce bare repo."""
+    """Empty agent_type defaults to 'general'; never produce bare repo."""
     from server._identity import canonical_agent_id
 
     assert canonical_agent_id("/tmp/myproject", "") == "myproject:general"

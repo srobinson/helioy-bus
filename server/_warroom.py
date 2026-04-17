@@ -30,11 +30,11 @@ def _scan_agent_types(runtime_id: str | None = None) -> list[dict]:
     """Return agent type definitions discovered by runtime adapters.
 
     ``runtime_id``:
-      * ``None`` — return the union across every registered runtime,
+      * ``None``: return the union across every registered runtime,
         sorted by ``qualified_name``. Used for runtime-agnostic flows
         (``warroom_discover`` without a filter, ``warroom_remove``
         resolving a role that could belong to any runtime).
-      * a registered runtime id — scope to that runtime's adapter.
+      * a registered runtime id: scope to that runtime's adapter.
 
     Results are cached per runtime in memory for 60 seconds. The union
     path stitches cached entries together rather than caching the union

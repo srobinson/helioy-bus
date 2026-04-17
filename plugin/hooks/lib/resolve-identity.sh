@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# lib/resolve-identity.sh — Shared agent identity resolution for helioy-bus hooks
+# lib/resolve-identity.sh: Shared agent identity resolution for helioy-bus hooks
 #
 # Source this file and call resolve_agent_id() to populate:
-#   HELIOY_AGENT_ID    — full agent_id (pane-title derived or basename fallback)
-#   HELIOY_AGENT_TYPE  — specialist role, e.g. "general", "backend-engineer"
-#   HELIOY_AGENT_REPO  — repository/project name (basename of working directory)
+#   HELIOY_AGENT_ID:    full agent_id (pane-title derived or basename fallback)
+#   HELIOY_AGENT_TYPE:  specialist role, e.g. "general", "backend-engineer"
+#   HELIOY_AGENT_REPO:  repository/project name (basename of working directory)
 #
 # Canonical identity shape (see server/_identity.py for Python-side contract):
 #   With tmux:    {repo}:{agent_type}:{session}:{window}.{pane}
@@ -131,7 +131,7 @@ resolve_agent_id() {
         return 0
     fi
 
-    # Step 3: Fallback — derive from CLAUDE_PROJECT_DIR or PWD.
+    # Step 3: Fallback. Derive from CLAUDE_PROJECT_DIR or PWD.
     local repo
     if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
         repo="$(basename "$CLAUDE_PROJECT_DIR")"

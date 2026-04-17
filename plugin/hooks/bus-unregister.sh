@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# bus-unregister.sh — SessionEnd hook for helioy-bus
+# bus-unregister.sh: SessionEnd hook for helioy-bus
 #
 # Removes this Claude Code instance from the bus registry on session end.
-# Uses direct DB writes — Claude is no longer active when SessionEnd fires.
+# Uses direct DB writes. Claude is no longer active when SessionEnd fires.
 # Gracefully no-ops if the registry does not exist.
 #
 # Configured in ~/.claude/settings.json as a SessionEnd hook.

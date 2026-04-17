@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# codex-launch.sh — Codex pane launcher that registers on the helioy-bus.
+# codex-launch.sh: Codex pane launcher that registers on the helioy-bus.
 #
 # Codex has no SessionStart/SessionEnd hook mechanism, so this wrapper
 # stands in for it: exports the runtime self-PID env, runs the shared
 # register hook, installs an EXIT trap for unregister, then foregrounds
 # codex. The wrapper stays alive as codex's parent so the trap fires
-# deterministically on exit or signal. Do not use `exec codex` — exec
+# deterministically on exit or signal. Do not use `exec codex`: exec
 # replaces the shell and drops the trap.
 #
 # Emitted as the launch command by the Codex runtime adapter

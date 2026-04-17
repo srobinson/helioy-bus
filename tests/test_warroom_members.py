@@ -6,7 +6,7 @@ Tests run against a temporary BUS_DIR via the shared isolated_bus fixture in con
 from __future__ import annotations
 
 # Tests patch the tmux gateway singleton directly. warroom_server no
-# longer re-exports `gateway` since the ALP-1789 service extraction.
+# longer re-exports `gateway` since the service extraction.
 from server._tmux import gateway
 
 from tests.conftest import _insert_member

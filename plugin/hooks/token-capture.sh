@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# token-capture.sh — PreToolUse hook for helioy-bus token tracking
+# token-capture.sh: PreToolUse hook for helioy-bus token tracking
 #
 # Captures the token count from the tmux status bar on every tool call.
 # The Claude Code status line always contains a "(\\d+) tokens" pattern.

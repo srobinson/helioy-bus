@@ -6,7 +6,7 @@ Tests run against a temporary BUS_DIR via the shared isolated_bus fixture in con
 from __future__ import annotations
 
 # Tests patch the tmux gateway singleton directly. warroom_server no
-# longer re-exports `gateway` since the ALP-1789 service extraction.
+# longer re-exports `gateway` since the service extraction.
 from server._tmux import gateway
 
 
@@ -212,7 +212,7 @@ def test_warroom_spawn_idempotent_replaces_existing(fake_plugins, monkeypatch):
     assert r1["warroom_id"] == "idem-test"
     assert len(r1["members"]) == 1
 
-    # Second spawn — different agent, same name
+    # Second spawn: different agent, same name
     r2 = wm.warroom_spawn(name="idem-test", agents=["frontend-engineer"], cwd="/tmp")
     assert r2["warroom_id"] == "idem-test"
     assert len(r2["members"]) == 1

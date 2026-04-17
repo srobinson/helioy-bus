@@ -1,4 +1,4 @@
-"""Adapter tests for TmuxGateway — the single tmux boundary.
+"""Adapter tests for TmuxGateway, the single tmux boundary.
 
 These tests stub `subprocess.run` to exercise failure, timeout, copy-mode,
 and best-effort paths without shelling out to a real tmux binary.

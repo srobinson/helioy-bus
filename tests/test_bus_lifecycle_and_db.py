@@ -156,7 +156,7 @@ def test_coexistence_of_both_modes(set_sender):
 def test_adhoc_session_fallback_identity(set_sender):
     """An ad-hoc claude session (no warroom, no tmux) registers with the
     canonical 2-segment identity: {repo}:{agent_type}. Bare-basename is a
-    legacy shape rejected by the canonical contract (ALP-1786)."""
+    legacy shape rejected by the canonical contract."""
     import server.bus_server as bm
 
     # Simulate ad-hoc registration as bus-register.sh would derive it
