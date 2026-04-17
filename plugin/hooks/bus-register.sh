@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# bus-register.sh — SessionStart hook for helioy-bus
+# bus-register.sh: SessionStart hook for helioy-bus
 #
-# Registers this Claude Code instance directly into the bus SQLite registry.
+# Registers this runtime instance directly into the bus SQLite registry.
 # Uses direct DB writes to avoid MCP subprocess overhead in lifecycle hooks.
 # Gracefully no-ops if Python or the bus dir is unavailable.
 #
@@ -10,7 +10,6 @@
 set -euo pipefail
 
 BUS_DIR="${HELIOY_BUS_DIR:-$HOME/.helioy/bus}"
-DB_PATH="$BUS_DIR/registry.db"
 INBOX_BASE="$BUS_DIR/inbox"
 
 # Resolve identity via shared lib (pane-title-first, then basename fallback).
@@ -22,6 +21,7 @@ resolve_agent_id
 
 AGENT_ID="$HELIOY_AGENT_ID"
 AGENT_TYPE="$HELIOY_AGENT_TYPE"
+RUNTIME="${HELIOY_RUNTIME:-claude}"
 
 # Derive TMUX_TARGET for the registry record (used for nudges).
 TMUX_TARGET=""
@@ -71,8 +71,8 @@ fi
 unset _BASH_SOURCE_ROOT
 
 # Write directly to SQLite via _db.py (single source of truth for schema).
-# All values passed through environment variables — never interpolated
-# into Python source — to prevent injection when paths contain special chars.
+# All values passed through environment variables, never interpolated
+# into Python source, to prevent injection when paths contain special chars.
 LOG_DIR="$BUS_DIR/logs"
 mkdir -p "$LOG_DIR"
 PY_STDERR=$(mktemp)
@@ -85,6 +85,7 @@ _HELIOY_PWD="$PWD_EFFECTIVE" \
 _HELIOY_TMUX="$TMUX_TARGET" \
 _HELIOY_SESSION_ID="$SESSION_ID" \
 _HELIOY_AGENT_TYPE="$AGENT_TYPE" \
+_HELIOY_RUNTIME="$RUNTIME" \
 _HELIOY_PID="$PPID" \
 HELIOY_BUS_ROOT="$HELIOY_BUS_ROOT" \
 python3 - <<'PYEOF' 2>"$PY_STDERR"
@@ -112,19 +113,32 @@ inbox.mkdir(parents=True, exist_ok=True)
 # Bootstrap schema (idempotent) and register in one transaction.
 # Use parent PID (Claude Code process), not this subprocess PID.
 with db() as conn:
+    # Pane eviction: a tmux pane hosts at most one Claude process at a time,
+    # so any prior row claiming our tmux_target is stale by definition.
+    # This is an ownership assertion from the new occupant, not PID-based
+    # liveness guessing.
+    tmux_target = os.environ["_HELIOY_TMUX"]
+    agent_id = os.environ["_HELIOY_AGENT_ID"]
+    if tmux_target:
+        conn.execute(
+            "DELETE FROM agents WHERE tmux_target = ? AND agent_id != ?",
+            (tmux_target, agent_id),
+        )
     conn.execute(
         """
         INSERT OR REPLACE INTO agents
-            (agent_id, cwd, tmux_target, pid, session_id, agent_type, registered_at, last_seen)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (agent_id, cwd, tmux_target, pid, session_id, agent_type, runtime,
+             registered_at, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            os.environ["_HELIOY_AGENT_ID"],
+            agent_id,
             os.environ["_HELIOY_PWD"],
-            os.environ["_HELIOY_TMUX"],
+            tmux_target,
             int(os.environ["_HELIOY_PID"]),
             os.environ.get("_HELIOY_SESSION_ID", ""),
             os.environ.get("_HELIOY_AGENT_TYPE", "general"),
+            os.environ.get("_HELIOY_RUNTIME", "claude"),
             _now(), _now(),
         ),
     )

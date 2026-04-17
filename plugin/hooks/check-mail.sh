@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# check-mail.sh — PreToolUse hook for helioy-bus
+# check-mail.sh: hook context surfacing for helioy-bus
 #
-# Fires on every matched tool use. Drains the agent's inbox and injects
-# pending messages into Claude's context via additionalContext.
+# Fires on every matched tool use and prompt submit. Does not drain the
+# inbox. It only summarizes unread mail into additionalContext so the
+# agent can call get_messages explicitly.
 #
 # Hook output on messages present:
-#   {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "..."}}
+#   {"hookSpecificOutput": {"hookEventName": "PreToolUse|UserPromptSubmit", "additionalContext": "..."}}
 #
-# Exit 0 always — never block tool use.
+# Exit 0 always, never block tool use.
 #
-# Matcher (in ~/.claude/settings.json):
+# Matcher (for the PreToolUse hook in ~/.claude/settings.json):
 #   TodoWrite|ToolSearch|WebFetch|WebSearch|Agent|Read|Write|Edit|Glob|Bash
 
 set -euo pipefail
@@ -17,7 +18,7 @@ set -euo pipefail
 INBOX_BASE="${HELIOY_BUS_INBOX:-$HOME/.helioy/bus/inbox}"
 PIDS_DIR="${HELIOY_BUS_DIR:-$HOME/.helioy/bus}/pids"
 
-# Prefer PID file written at SessionStart (fast path — avoids tmux call on every tool use).
+# Prefer PID file written at SessionStart (fast path, avoids tmux call on every tool use).
 # Fall back to shared identity resolution when no PID file is present.
 PID_FILE="$PIDS_DIR/$PPID"
 if [[ -f "$PID_FILE" ]]; then
@@ -44,7 +45,7 @@ if [[ ${#MSG_FILES[@]} -eq 0 ]]; then
     exit 0
 fi
 
-# Build notification — senders only, do NOT drain. get_messages does that.
+# Build notification: senders only, do not drain. get_messages does that.
 SENDERS=""
 COUNT=0
 
@@ -62,7 +63,7 @@ if [[ $COUNT -eq 0 ]]; then
     exit 0
 fi
 
-CONTEXT="[helioy-bus] ${COUNT} pending message(s) for '${AGENT_ID}' from: ${SENDERS} — call get_messages to read."
+CONTEXT="[helioy-bus] ${COUNT} pending message(s) for '${AGENT_ID}' from: ${SENDERS}. Call get_messages to read."
 
 # Read hook input to detect event type. PreToolUse input contains "tool_name",
 # UserPromptSubmit input contains "prompt". Default to PreToolUse.

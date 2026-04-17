@@ -7,76 +7,22 @@ warroom status.
 
 Shares registry.db with helioy-bus via _db.py (WAL mode).
 
-Internal modules:
-    _db.py       - Database, path constants, logging
-    _identity.py - Agent identity resolution
-    _tmux.py     - tmux pane management, nudging, spawning
-    _warroom.py  - Agent type discovery and resolution
+Tool handlers in this module are thin adapters over the warroom
+service in `server.services.warroom`. Reconciliation work that used
+to be a side effect of `warroom_status` (member agent_id backfill) is
+now invoked explicitly by the status handler.
 """
 
 from __future__ import annotations
 
-import contextlib
-import json
-import os
-import re
-import sqlite3
-import subprocess
-from pathlib import Path
-
 from mcp.server.fastmcp import FastMCP
 
-from server._db import PRESETS_DIR, _now, db
-from server._tmux import _spawn_pane, _tmux_check, _tmux_pane_alive
-from server._warroom import (
-    _resolve_agent_type,
-    _scan_agent_types,
-)
+from server.services import reconciliation, warroom
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 mcp = FastMCP("helioy-warroom")
 
-
-# ── Internal helpers ──────────────────────────────────────────────────────────
-
-
-def _kill_warrooms(
-    conn: sqlite3.Connection, name: str, kill_all: bool
-) -> list[str]:
-    """Kill warrooms and remove DB records using an existing connection.
-
-    Kills the tmux window for each matching warroom (if still alive) and
-    deletes the warroom and its members from the database.
-
-    Returns the list of killed warroom IDs.
-    """
-    if kill_all:
-        rows = conn.execute(
-            "SELECT warroom_id, tmux_session, tmux_window FROM warrooms WHERE status = 'active'"
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT warroom_id, tmux_session, tmux_window FROM warrooms WHERE warroom_id = ?",
-            (name,),
-        ).fetchall()
-
-    killed = []
-    for row in rows:
-        wid = row["warroom_id"]
-        # Use '=' prefix for exact window-name match (tmux 2.x+).
-        # Without '=', tmux uses prefix matching: "eng" would match
-        # "engineering" and kill an unrelated window.
-        target = f"{row['tmux_session']}:={row['tmux_window']}"
-        with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
-            subprocess.run(
-                ["tmux", "kill-window", "-t", target],
-                capture_output=True, timeout=5,
-            )
-        conn.execute("DELETE FROM warroom_members WHERE warroom_id = ?", (wid,))
-        conn.execute("DELETE FROM warrooms WHERE warroom_id = ?", (wid,))
-        killed.append(wid)
-    return killed
 
 # ── Warroom MCP tools ─────────────────────────────────────────────────────────
 
@@ -86,53 +32,40 @@ def warroom_discover(
     query: str = "",
     namespace: str = "",
     limit: int = 20,
+    runtime: str = "",
 ) -> dict:
-    """Search available agent types that can be spawned in a warroom.
+    """Search available agent types across registered runtimes.
 
-    Scans the Claude Code plugin cache for agent definitions and returns
-    matching entries. Uses an in-memory cache with 60s TTL.
+    Each runtime adapter owns its own catalogue layout (Claude plugin
+    cache vs. Codex skills, etc.) and contributes agents via
+    ``discover_agent_types()``. Results are cached per runtime with 60s TTL.
 
     Args:
         query: Substring match against agent name and description. Empty returns all.
-        namespace: Filter to a specific plugin namespace (e.g. 'helioy-tools'). Empty returns all.
+        namespace: Filter to a specific namespace (e.g. 'helioy-tools', 'codex').
         limit: Maximum number of results to return (default 20).
+        runtime: Scope discovery to one runtime id ('claude', 'codex', ...).
+            Empty returns the union across every registered runtime.
 
     Returns:
-        {agents: [...], total: int, namespaces: [...]}
+        {agents: [...], total: int, namespaces: [...], runtimes: [...]}
     """
-    all_types = _scan_agent_types()
-
-    # Collect unique namespaces
-    all_namespaces = sorted({a["namespace"] for a in all_types})
-
-    # Apply filters
-    filtered = all_types
-    if namespace:
-        filtered = [a for a in filtered if a["namespace"] == namespace]
-    if query:
-        q = query.lower()
-        filtered = [
-            a for a in filtered
-            if q in a["name"].lower() or q in a.get("summary", "").lower()
-        ]
-
-    total = len(filtered)
-    return {
-        "agents": filtered[:limit],
-        "total": total,
-        "namespaces": all_namespaces,
-    }
+    return warroom.discover(
+        query=query, namespace=namespace, limit=limit, runtime=runtime
+    )
 
 
 @mcp.tool()
 def warroom_spawn_repos(
     window: str = "warroom",
     layout: str = "tiled",
+    runtime: str = "",
 ) -> dict:
-    """Spawn one general Claude agent per helioy repo in a single tmux window.
+    """Spawn one general-role agent per helioy repo in a single tmux window.
 
-    Repo-mode: each pane runs in the repo's directory without a specific agent
-    type (equivalent to running `claude --dangerously-skip-permissions`).
+    Repo-mode: each pane runs in the repo's directory without a specialist
+    role. The concrete launch command is supplied by the runtime adapter
+    selected by ``runtime`` (defaults to the incumbent runtime when empty).
 
     Repos are discovered by scanning HELIOY_BASE for subdirectories that
     contain a .git folder. Uses HELIOY_BASE env var (default:
@@ -142,73 +75,22 @@ def warroom_spawn_repos(
     Args:
         window: tmux window name. Default "warroom".
         layout: tmux layout algorithm. Default "tiled".
+        runtime: Runtime id (e.g. "claude", "codex"). Empty string uses
+            the default adapter.
 
     Returns:
-        {warroom_id, tmux_window, members: [...], spawned_at}
+        {
+          warroom_id,
+          tmux_window,
+          members: [{warroom_member_id, desired_role, desired_runtime,
+                     desired_repo, spawn_order, agent_type, qualified_name,
+                     tmux_target, pane_id, runtime}],
+          spawned_at,
+          messaging: {instruction},
+          errors?: [...]
+        }
     """
-    if not os.environ.get("TMUX"):
-        return {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
-
-    try:
-        session = _tmux_check("display-message", "-p", "#{session_name}")
-    except RuntimeError as e:
-        return {"error": f"Cannot determine tmux session: {e}"}
-
-    base = Path(os.environ.get("HELIOY_BASE", Path.home() / "Dev/LLM/DEV/helioy"))
-    if not base.is_dir():
-        return {"error": f"HELIOY_BASE not found: {base}"}
-
-    repos = sorted(p for p in base.iterdir() if p.is_dir() and (p / ".git").exists())
-    if not repos:
-        return {"error": f"No git repos found under {base}"}
-
-    # Kill any existing warroom with this window name BEFORE spawning.
-    with db() as conn:
-        _kill_warrooms(conn, window, kill_all=False)
-
-    now = _now()
-    members = []
-    spawn_errors = []
-    for i, repo_path in enumerate(repos):
-        try:
-            pane_info = _spawn_pane(
-                session=session,
-                window=window,
-                cwd=str(repo_path),
-                agent_type="general",
-                qualified_name=None,
-                is_first=(i == 0),
-                layout=layout,
-            )
-            members.append(pane_info)
-        except RuntimeError as e:
-            spawn_errors.append({"repo": repo_path.name, "error": str(e)})
-
-    with db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO warrooms
-               (warroom_id, tmux_session, tmux_window, cwd, created_at, status)
-               VALUES (?, ?, ?, ?, ?, 'active')""",
-            (window, session, window, str(base), now),
-        )
-        for m in members:
-            agent_label = m["qualified_name"] or "general"
-            conn.execute(
-                """INSERT OR REPLACE INTO warroom_members
-                   (warroom_id, agent_type, tmux_target, pane_id, agent_id, spawned_at)
-                   VALUES (?, ?, ?, ?, NULL, ?)""",
-                (window, agent_label, m["tmux_target"], m["pane_id"], now),
-            )
-
-    result: dict = {
-        "warroom_id": window,
-        "tmux_window": window,
-        "members": members,
-        "spawned_at": now,
-    }
-    if spawn_errors:
-        result["errors"] = spawn_errors
-    return result
+    return warroom.spawn_repos(window=window, layout=layout, runtime=runtime)
 
 
 @mcp.tool()
@@ -217,8 +99,9 @@ def warroom_spawn(
     agents: list[str],
     cwd: str = "",
     layout: str = "tiled",
+    runtime: str = "",
 ) -> dict:
-    """Create a warroom: a tmux window with one Claude Code pane per agent type.
+    """Create a warroom: a tmux window with one runtime pane per agent type.
 
     Idempotent: kills any existing warroom with the same name first. Validates
     all agent types before spawning any panes. Returns immediately without
@@ -232,117 +115,24 @@ def warroom_spawn(
         cwd: Working directory for all panes. Defaults to caller's cwd.
         layout: tmux layout algorithm (tiled, even-horizontal, even-vertical,
                 main-horizontal, main-vertical). Default: tiled.
+        runtime: Runtime id for all spawned panes (e.g. "claude", "codex").
+            Empty string uses the default adapter.
 
     Returns:
-        {warroom_id, tmux_window, members: [...], spawned_at}
-    """
-    # Validate name
-    if not name or not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,29}$", name):
-        return {
-            "error": "Name must be 1-30 chars, alphanumeric and hyphens, starting with alphanumeric."
+        {
+          warroom_id,
+          tmux_window,
+          members: [{warroom_member_id, desired_role, desired_runtime,
+                     spawn_order, agent_type, qualified_name,
+                     tmux_target, pane_id, runtime}],
+          spawned_at,
+          messaging: {instruction, member_types},
+          errors?: [...]
         }
-
-    if not agents:
-        return {"error": "At least one agent type is required."}
-    if len(agents) > 8:
-        return {"error": "Maximum 8 agents per warroom."}
-
-    valid_layouts = {
-        "tiled", "even-horizontal", "even-vertical", "main-horizontal", "main-vertical"
-    }
-    if layout not in valid_layouts:
-        return {"error": f"Invalid layout. Choose from: {', '.join(sorted(valid_layouts))}"}
-
-    # Check we're inside tmux
-    tmux_env = os.environ.get("TMUX", "")
-    if not tmux_env:
-        return {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
-
-    # Resolve the current tmux session name
-    try:
-        session = _tmux_check("display-message", "-p", "#{session_name}")
-    except RuntimeError as e:
-        return {"error": f"Cannot determine tmux session: {e}"}
-
-    if not cwd:
-        cwd = os.getcwd()
-
-    # Resolve all agent types before spawning anything
-    resolved = []
-    errors = []
-    all_types = _scan_agent_types()
-    for agent_name in agents:
-        agent_def = _resolve_agent_type(agent_name)
-        if agent_def is None:
-            # Build fuzzy suggestions
-            q = agent_name.lower()
-            suggestions = [
-                a["qualified_name"] for a in all_types
-                if q in a["name"].lower() or q in a.get("summary", "").lower()
-            ][:5]
-            errors.append({
-                "agent": agent_name,
-                "error": "Unknown agent type",
-                "suggestions": suggestions,
-            })
-        else:
-            resolved.append(agent_def)
-
-    if errors:
-        return {"error": "Unknown agent types", "details": errors}
-
-    # Kill any existing warroom with this name BEFORE spawning new panes.
-    # This ensures idempotency: tmux rejects duplicate window names, so the
-    # kill must happen first to guarantee the new-window call succeeds.
-    with db() as conn:
-        _kill_warrooms(conn, name, kill_all=False)
-
-    # Spawn panes (existing window is guaranteed gone)
-    now = _now()
-    members = []
-    spawn_errors = []
-    for i, agent_def in enumerate(resolved):
-        try:
-            pane_info = _spawn_pane(
-                session=session,
-                window=name,
-                cwd=cwd,
-                agent_type=agent_def["name"],
-                qualified_name=agent_def["qualified_name"],
-                is_first=(i == 0),
-                layout=layout,
-            )
-            members.append(pane_info)
-        except RuntimeError as e:
-            spawn_errors.append({
-                "agent_type": agent_def["qualified_name"],
-                "error": str(e),
-            })
-
-    with db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO warrooms
-               (warroom_id, tmux_session, tmux_window, cwd, created_at, status)
-               VALUES (?, ?, ?, ?, ?, 'active')""",
-            (name, session, name, cwd, now),
-        )
-        for m in members:
-            conn.execute(
-                """INSERT OR REPLACE INTO warroom_members
-                   (warroom_id, agent_type, tmux_target, pane_id, agent_id, spawned_at)
-                   VALUES (?, ?, ?, ?, NULL, ?)""",
-                (name, m["qualified_name"], m["tmux_target"], m["pane_id"], now),
-            )
-
-    result = {
-        "warroom_id": name,
-        "tmux_window": name,
-        "members": members,
-        "spawned_at": now,
-    }
-    if spawn_errors:
-        result["errors"] = spawn_errors
-    return result
+    """
+    return warroom.spawn(
+        name=name, agents=agents, cwd=cwd, layout=layout, runtime=runtime
+    )
 
 
 @mcp.tool()
@@ -361,13 +151,7 @@ def warroom_kill(
     Returns:
         {killed: [...], errors: [...]}
     """
-    if not name and not kill_all:
-        return {"error": "Provide a warroom name or set kill_all=True."}
-
-    with db() as conn:
-        killed = _kill_warrooms(conn, name, kill_all)
-
-    return {"killed": killed, "errors": []}
+    return warroom.kill(name=name, kill_all=kill_all)
 
 
 @mcp.tool()
@@ -383,78 +167,17 @@ def warroom_status(
         name: Specific warroom name. Empty returns all active warrooms.
 
     Returns:
-        List of warroom status dicts with member details including
-        registration state and pane liveness.
+        List of warroom dicts:
+        {warroom_id, tmux_session, tmux_window, cwd, layout,
+         runtime_policy, metadata, status, created_at, members: [...]}
+
+        Each member includes:
+        {warroom_member_id, desired_runtime, desired_role, desired_repo,
+         state, agent_instance_id, spawn_order, agent_type, tmux_target,
+         pane_id, registered, pane_alive, created_at, updated_at, token_usage}
     """
-    with db() as conn:
-        if name:
-            warrooms = conn.execute(
-                "SELECT * FROM warrooms WHERE warroom_id = ?", (name,)
-            ).fetchall()
-        else:
-            warrooms = conn.execute(
-                "SELECT * FROM warrooms WHERE status = 'active'"
-            ).fetchall()
-
-        result = []
-        for wr in warrooms:
-            wid = wr["warroom_id"]
-            # Single JOIN replaces N+1 per-member agent lookups.
-            members_rows = conn.execute(
-                """
-                SELECT wm.*,
-                       a.agent_id  AS registered_agent_id,
-                       a.token_usage AS agent_token_usage
-                FROM warroom_members wm
-                LEFT JOIN agents a ON a.tmux_target = wm.tmux_target
-                WHERE wm.warroom_id = ?
-                """,
-                (wid,),
-            ).fetchall()
-
-            members = []
-            for m in members_rows:
-                tmux_target = m["tmux_target"]
-                pane_alive = _tmux_pane_alive(tmux_target)
-
-                registered = m["registered_agent_id"] is not None
-                agent_id = m["registered_agent_id"] if registered else m["agent_id"]
-                token_usage_raw = m["agent_token_usage"] if registered else None
-                token_usage: dict | str | None = token_usage_raw
-                if token_usage_raw:
-                    with contextlib.suppress(json.JSONDecodeError, TypeError):
-                        token_usage = json.loads(token_usage_raw)
-
-                # Backfill agent_id in warroom_members if newly registered
-                if registered and not m["agent_id"]:
-                    conn.execute(
-                        "UPDATE warroom_members SET agent_id = ? "
-                        "WHERE warroom_id = ? AND agent_type = ?",
-                        (agent_id, wid, m["agent_type"]),
-                    )
-
-                members.append({
-                    "agent_type": m["agent_type"],
-                    "tmux_target": tmux_target,
-                    "pane_id": m["pane_id"],
-                    "agent_id": agent_id,
-                    "registered": registered,
-                    "pane_alive": pane_alive,
-                    "spawned_at": m["spawned_at"],
-                    "token_usage": token_usage,
-                })
-
-            result.append({
-                "warroom_id": wid,
-                "tmux_session": wr["tmux_session"],
-                "tmux_window": wr["tmux_window"],
-                "cwd": wr["cwd"],
-                "status": wr["status"],
-                "created_at": wr["created_at"],
-                "members": members,
-            })
-
-    return result
+    reconciliation.backfill_warroom_member_agent_ids(name)
+    return warroom.status(name=name)
 
 
 @mcp.tool()
@@ -462,160 +185,61 @@ def warroom_add(
     name: str,
     agent: str,
     cwd: str = "",
+    runtime: str = "",
 ) -> dict:
     """Add an agent to an existing warroom.
 
-    Splits a new pane in the warroom's tmux window and launches Claude Code
-    with the specified agent type. Each agent type can appear at most once
-    per warroom.
+    Splits a new pane in the warroom's tmux window and launches the
+    chosen runtime with the specified agent type. Duplicate roles are
+    allowed: each call creates a new stable member record. The ``runtime``
+    arg lets a warroom mix runtimes across members (per-member dispatch).
 
     Args:
         name: Warroom identifier.
         agent: Agent type name (qualified or short).
         cwd: Working directory for the new pane. Defaults to the warroom's
              original cwd.
+        runtime: Runtime id for the new member (e.g. "claude", "codex").
+            Empty string uses the default adapter.
 
     Returns:
-        {warroom_id, added: {agent_type, qualified_name, tmux_target, pane_id}, member_count}
+        {warroom_id,
+         added: {warroom_member_id, desired_role, desired_runtime,
+                 spawn_order, agent_type, qualified_name, tmux_target,
+                 pane_id, runtime},
+         member_count}
     """
-    # Resolve agent type (no db needed)
-    agent_def = _resolve_agent_type(agent)
-    if not agent_def:
-        all_types = _scan_agent_types()
-        q = agent.lower()
-        suggestions = [
-            a["qualified_name"] for a in all_types
-            if q in a["name"].lower() or q in a.get("summary", "").lower()
-        ][:5]
-        return {"error": "Unknown agent type", "suggestions": suggestions}
-
-    qn = agent_def["qualified_name"]
-
-    # Look up warroom and check for duplicate in one connection
-    with db() as conn:
-        wr = conn.execute(
-            "SELECT * FROM warrooms WHERE warroom_id = ? AND status = 'active'",
-            (name,),
-        ).fetchone()
-        if not wr:
-            return {"error": f"No active warroom '{name}'."}
-
-        existing = conn.execute(
-            "SELECT 1 FROM warroom_members WHERE warroom_id = ? AND agent_type = ?",
-            (name, qn),
-        ).fetchone()
-        if existing:
-            return {"error": f"Agent type '{qn}' already in warroom '{name}'. Remove it first."}
-
-        use_cwd = cwd or wr["cwd"]
-
-        # Spawn pane outside the hot path but inside the connection lifetime
-        try:
-            pane_info = _spawn_pane(
-                session=wr["tmux_session"],
-                window=wr["tmux_window"],
-                cwd=use_cwd,
-                agent_type=agent_def["name"],
-                qualified_name=qn,
-                is_first=False,
-                layout="tiled",
-            )
-        except RuntimeError as e:
-            return {"error": f"Spawn failed: {e}"}
-
-        now = _now()
-        conn.execute(
-            """INSERT INTO warroom_members
-               (warroom_id, agent_type, tmux_target, pane_id, agent_id, spawned_at)
-               VALUES (?, ?, ?, ?, NULL, ?)""",
-            (name, qn, pane_info["tmux_target"], pane_info["pane_id"], now),
-        )
-        count = conn.execute(
-            "SELECT COUNT(*) FROM warroom_members WHERE warroom_id = ?", (name,)
-        ).fetchone()[0]
-
-    return {
-        "warroom_id": name,
-        "added": pane_info,
-        "member_count": count,
-    }
+    return warroom.add(name=name, agent=agent, cwd=cwd, runtime=runtime)
 
 
 @mcp.tool()
 def warroom_remove(
     name: str,
-    agent: str,
+    agent: str = "",
+    member_id: str = "",
 ) -> dict:
-    """Remove an agent from a warroom by killing its tmux pane.
+    """Remove a member from a warroom by killing its tmux pane.
 
-    If this is the last agent in the warroom, the warroom itself is
+    Targets a stable member record. Pass `member_id` for unambiguous
+    selection. The legacy `agent` argument is accepted for convenience and
+    resolves to a unique role within the warroom; ambiguous matches return
+    an error listing candidate member ids.
+
+    If this is the last member in the warroom, the warroom itself is
     torn down.
 
     Args:
         name: Warroom identifier.
-        agent: Agent type to remove (qualified or short name).
+        agent: Agent role (qualified or short). Used when `member_id` is empty.
+        member_id: Stable warroom_member_id. Wins over `agent` if both given.
 
     Returns:
-        {warroom_id, removed: str, remaining_members: int, warroom_killed: bool}
+        {warroom_id,
+         removed: {warroom_member_id, desired_role},
+         remaining_members,
+         warroom_killed}
     """
-    agent_def = _resolve_agent_type(agent)
-    qn = agent_def["qualified_name"] if agent_def else agent
-
-    with db() as conn:
-        member = conn.execute(
-            "SELECT * FROM warroom_members WHERE warroom_id = ? AND agent_type = ?",
-            (name, qn),
-        ).fetchone()
-        if not member:
-            return {"error": f"No agent '{qn}' in warroom '{name}'."}
-
-        pane_id = member["pane_id"]
-
-        # Kill the tmux pane (may already be dead)
-        with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
-            subprocess.run(
-                ["tmux", "kill-pane", "-t", pane_id],
-                capture_output=True, timeout=5,
-            )
-
-        # Remove the member record
-        conn.execute(
-            "DELETE FROM warroom_members WHERE warroom_id = ? AND agent_type = ?",
-            (name, qn),
-        )
-
-        # Check remaining members
-        remaining = conn.execute(
-            "SELECT COUNT(*) FROM warroom_members WHERE warroom_id = ?", (name,)
-        ).fetchone()[0]
-
-        warroom_killed = False
-        if remaining == 0:
-            conn.execute(
-                "UPDATE warrooms SET status = 'killed' WHERE warroom_id = ?",
-                (name,),
-            )
-            warroom_killed = True
-        else:
-            # Reflow remaining panes
-            wr = conn.execute(
-                "SELECT tmux_session, tmux_window FROM warrooms WHERE warroom_id = ?",
-                (name,),
-            ).fetchone()
-            if wr:
-                with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
-                    subprocess.run(
-                        ["tmux", "select-layout", "-t",
-                         f"{wr['tmux_session']}:{wr['tmux_window']}", "tiled"],
-                        capture_output=True, timeout=5,
-                    )
-
-    return {
-        "warroom_id": name,
-        "removed": qn,
-        "remaining_members": remaining,
-        "warroom_killed": warroom_killed,
-    }
+    return warroom.remove(name=name, agent=agent, member_id=member_id)
 
 
 @mcp.tool()
@@ -628,23 +252,7 @@ def warroom_presets() -> dict:
     Returns:
         {presets: [{name, description, agents, tags}, ...]}
     """
-    presets = []
-    if not PRESETS_DIR.is_dir():
-        return {"presets": []}
-
-    for path in sorted(PRESETS_DIR.glob("*.json")):
-        try:
-            data = json.loads(path.read_text())
-            presets.append({
-                "name": data.get("name", path.stem),
-                "description": data.get("description", ""),
-                "agents": data.get("agents", []),
-                "tags": data.get("tags", []),
-            })
-        except (json.JSONDecodeError, OSError):
-            continue
-
-    return {"presets": presets}
+    return warroom.list_presets()
 
 
 @mcp.tool()
@@ -667,25 +275,9 @@ def warroom_save_preset(
     Returns:
         {saved: name, path: str}
     """
-    if not name or not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,49}$", name):
-        return {
-            "error": "Name must be 1-50 chars, alphanumeric and hyphens, starting with alphanumeric."
-        }
-    if not agents:
-        return {"error": "At least one agent type is required."}
-
-    PRESETS_DIR.mkdir(parents=True, exist_ok=True)
-    preset_path = PRESETS_DIR / f"{name}.json"
-
-    data = {
-        "name": name,
-        "description": description,
-        "agents": agents,
-        "tags": tags or [],
-    }
-
-    preset_path.write_text(json.dumps(data, indent=2))
-    return {"saved": name, "path": str(preset_path)}
+    return warroom.save_preset(
+        name=name, agents=agents, description=description, tags=tags
+    )
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

@@ -43,9 +43,13 @@ run_resolve() {
     done
     (
         cd "$workdir"
-        for pair in "${exports[@]}"; do
-            export "${pair?}"
-        done
+        # Guard against bash 3.2 (macOS default): "${arr[@]}" on an empty
+        # array triggers "unbound variable" under `set -u`.
+        if [[ ${#exports[@]} -gt 0 ]]; then
+            for pair in "${exports[@]}"; do
+                export "${pair?}"
+            done
+        fi
         # Ensure no tmux inheritance from caller
         unset TMUX TMUX_PANE 2>/dev/null || true
         source "$LIB"
@@ -76,22 +80,26 @@ echo "=== resolve-identity.sh tests ==="
 mkdir -p /tmp/helioy-test-myproject
 mkdir -p /tmp/helioy-test-myrepo
 
-# ── Test 1: No tmux, no CLAUDE_PROJECT_DIR -- fallback to PWD basename ----------
+# ── Test 1: No tmux, no CLAUDE_PROJECT_DIR -- canonical 2-segment fallback ------
+# Also the regression test for the empty-exports path: `run_resolve` is called
+# with only WORKDIR, so the internal `exports` array is empty. Under bash 3.2
+# with `set -u`, expanding `"${exports[@]}"` used to abort with "unbound
+# variable". The guard added by ALP-1793 is exercised here on every run.
 echo ""
 echo "--- Fallback: no tmux, no CLAUDE_PROJECT_DIR ---"
 
 result=$(run_resolve "WORKDIR=/tmp/helioy-test-myproject")
-assert_eq "agent_id is basename(PWD)"   "$(parse_result "$result" id)"   "helioy-test-myproject"
-assert_eq "agent_type defaults to general" "$(parse_result "$result" type)" "general"
-assert_eq "agent_repo is basename(PWD)" "$(parse_result "$result" repo)" "helioy-test-myproject"
+assert_eq "agent_id is {repo}:{agent_type}" "$(parse_result "$result" id)"   "helioy-test-myproject:general"
+assert_eq "agent_type defaults to general"  "$(parse_result "$result" type)" "general"
+assert_eq "agent_repo is basename(PWD)"     "$(parse_result "$result" repo)" "helioy-test-myproject"
 
 # ── Test 2: No tmux, with CLAUDE_PROJECT_DIR ----------------------------------
 echo ""
 echo "--- Fallback: no tmux, with CLAUDE_PROJECT_DIR ---"
 
 result=$(run_resolve "WORKDIR=/tmp" "CLAUDE_PROJECT_DIR=/tmp/helioy-bus-test")
-assert_eq "agent_id uses CLAUDE_PROJECT_DIR"   "$(parse_result "$result" id)"   "helioy-bus-test"
-assert_eq "agent_type defaults to general"     "$(parse_result "$result" type)" "general"
+assert_eq "agent_id uses CLAUDE_PROJECT_DIR" "$(parse_result "$result" id)"   "helioy-bus-test:general"
+assert_eq "agent_type defaults to general"   "$(parse_result "$result" type)" "general"
 assert_eq "agent_repo uses CLAUDE_PROJECT_DIR" "$(parse_result "$result" repo)" "helioy-bus-test"
 
 # ── Test 3: No tmux, HELIOY_BUS_AGENT_TYPE override ---------------------------
@@ -100,7 +108,7 @@ echo "--- Fallback with HELIOY_BUS_AGENT_TYPE override ---"
 
 result=$(run_resolve "WORKDIR=/tmp/helioy-test-myrepo" "HELIOY_BUS_AGENT_TYPE=backend-engineer")
 assert_eq "agent_type from HELIOY_BUS_AGENT_TYPE" "$(parse_result "$result" type)" "backend-engineer"
-assert_eq "agent_id is basename(PWD)"             "$(parse_result "$result" id)"   "helioy-test-myrepo"
+assert_eq "agent_id includes agent_type"          "$(parse_result "$result" id)"   "helioy-test-myrepo:backend-engineer"
 
 # ── Test 4: Identity pattern validation regex ----------------------------------
 echo ""

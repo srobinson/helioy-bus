@@ -6,7 +6,7 @@ Implements the same interface as warroom.sh:
   warroom-cli kill <name|all>              # kill warroom(s)
   warroom-cli status                       # list all warroom agents
 
-Calls Python functions directly — no MCP round-trip.
+Calls Python functions directly, no MCP round-trip.
 """
 
 from __future__ import annotations

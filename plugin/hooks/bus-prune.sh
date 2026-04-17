@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bus-prune.sh — Proactive registry cleanup triggered by tmux hooks
+# bus-prune.sh: Proactive registry cleanup triggered by tmux hooks
 #
 # Removes agents whose tmux panes no longer exist and cleans stale PID files.
 # Called by tmux after-kill-pane and window-unlinked hooks (installed by

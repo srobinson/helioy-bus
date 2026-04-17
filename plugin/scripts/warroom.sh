@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# warroom.sh — thin wrapper over helioy-warroom-cli.
+# warroom.sh: thin wrapper over helioy-warroom-cli.
 #
 # Usage:
 #   warroom.sh                              # repo-mode: one agent per helioy repo

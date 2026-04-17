@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# stop-check-mail.sh — Stop hook for helioy-bus
+# stop-check-mail.sh: Stop hook for helioy-bus
 #
 # Fires when Claude finishes a response and is about to go idle.
 # If the agent has unread messages, blocks the stop and injects the
