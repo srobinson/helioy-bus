@@ -243,7 +243,9 @@ Agent identity is resolved through a three-tier chain:
 
 1. **PID file (fast path)**: At SessionStart, `bus-register.sh` writes the agent_id to `~/.helioy/bus/pids/{pid}`. The `_self_agent_id()` function reads this file for O(1) resolution.
 2. **Shell resolver (slow path)**: Falls back to `resolve-identity.sh`, which reads the tmux pane title (format: `{repo}:{agent_type}:{session}:{window}.{pane}`) and derives a consistent identity.
-3. **Basename fallback**: If both fail, uses `basename(cwd)` to maintain availability at the cost of potential identity divergence.
+3. **Canonical fallback**: If both fail, `canonical_agent_id()` derives the
+   same canonical `{repo}:{agent_type}` shape used elsewhere, preserving
+   availability without reintroducing split-identity drift.
 
 ## Entry Points
 

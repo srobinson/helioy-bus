@@ -52,19 +52,20 @@ def register_agent(
     runtime: str = "",
     profile: dict | None = None,
 ) -> dict:
-    """Register this Claude Code instance as an agent on the helioy-bus.
+    """Register this runtime instance as an agent on the helioy-bus.
 
     Args:
-        pwd: Working directory of the Claude Code session (pass $PWD or
-             $CLAUDE_PROJECT_DIR).
+        pwd: Working directory of the runtime session (pass $PWD or
+             $CLAUDE_PROJECT_DIR when available).
         tmux_target: tmux target for nudges, e.g. "main:1.0"
                      (session:window.pane). Auto-detected if omitted.
         agent_id: Override the auto-derived agent ID. Defaults to the
                   canonical form produced by canonical_agent_id():
                   "{repo}:{agent_type}:{tmux_target}" when tmux_target is
                   provided, otherwise "{repo}:{agent_type}".
-        session_id: Claude Code session UUID. Set by claude-wrapper via
-                    HELIOY_SESSION_ID env var. Enables JSONL stream access.
+        session_id: Optional runtime session UUID. Set by claude-wrapper via
+                    HELIOY_SESSION_ID for Claude sessions. Enables JSONL
+                    stream access when available.
         agent_type: Specialist role of this agent (e.g. "general",
                     "backend-engineer", "mobile-engineer"). Defaults to
                     "general". Used for role-based addressing in send_message.
