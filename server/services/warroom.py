@@ -90,6 +90,11 @@ def _build_suggestions(needle: str, all_types: list[dict], limit: int = 5) -> li
     ][:limit]
 
 
+def _short_role_name(role: str) -> str:
+    """Return the short-name portion of a persisted desired_role."""
+    return role.rsplit(":", 1)[-1]
+
+
 def _resolve_runtime(runtime: str) -> tuple[RuntimeAdapter | None, dict | None]:
     """Normalize and validate a user-supplied runtime id.
 
@@ -586,19 +591,24 @@ def remove(*, name: str, agent: str = "", member_id: str = "") -> dict:
             if not member:
                 return {"error": f"No member '{member_id}' in warroom '{name}'."}
         else:
-            agent_def = _resolve_agent_type(agent)
-            qn = agent_def["qualified_name"] if agent_def else agent
-            matches = conn.execute(
+            members = conn.execute(
                 "SELECT * FROM warroom_members "
-                "WHERE warroom_id = ? AND desired_role = ? "
+                "WHERE warroom_id = ? "
                 "ORDER BY spawn_order",
-                (name, qn),
+                (name,),
             ).fetchall()
+            if ":" in agent:
+                matches = [m for m in members if m["desired_role"] == agent]
+            else:
+                matches = [
+                    m for m in members
+                    if _short_role_name(m["desired_role"]) == agent
+                ]
             if not matches:
-                return {"error": f"No member with role '{qn}' in warroom '{name}'."}
+                return {"error": f"No member with role '{agent}' in warroom '{name}'."}
             if len(matches) > 1:
                 return {
-                    "error": f"Role '{qn}' is ambiguous in warroom '{name}'.",
+                    "error": f"Role '{agent}' is ambiguous in warroom '{name}'.",
                     "candidates": [
                         {
                             "warroom_member_id": m["warroom_member_id"],

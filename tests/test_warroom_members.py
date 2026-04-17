@@ -447,6 +447,59 @@ def test_warroom_remove_agent(fake_plugins, monkeypatch):
     assert result["warroom_killed"] is False
 
 
+def test_warroom_remove_short_name_scoped_to_target_warroom(
+    fake_plugins, fake_codex_skills, monkeypatch
+):
+    """Short-name removal ignores collisions outside the target warroom."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    cache = fake_codex_skills
+    (cache / "backend-engineer").mkdir()
+    (cache / "backend-engineer" / "SKILL.md").write_text(
+        '---\n'
+        'name: backend-engineer\n'
+        'description: "Codex backend engineer"\n'
+        '---\n'
+    )
+
+    now = _now()
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("mix-rm", "main", "mix-rm", "/tmp", now, "active"),
+        )
+        codex_id = _insert_member(
+            conn,
+            warroom_id="mix-rm",
+            role="codex:backend-engineer",
+            tmux_target="main:1.0",
+            pane_id="%10",
+            now=now,
+            runtime="codex",
+        )
+        _insert_member(
+            conn,
+            warroom_id="mix-rm",
+            role="helioy-tools:frontend-engineer",
+            tmux_target="main:1.1",
+            pane_id="%11",
+            now=now,
+            runtime="claude",
+        )
+
+    monkeypatch.setattr(gateway, "kill_pane", lambda pane_id: True)
+    monkeypatch.setattr(gateway, "select_layout", lambda *args, **kwargs: True)
+
+    result = wm.warroom_remove(name="mix-rm", agent="backend-engineer")
+    assert "error" not in result
+    assert result["removed"]["warroom_member_id"] == codex_id
+    assert result["removed"]["desired_role"] == "codex:backend-engineer"
+
+
 def test_warroom_remove_reapplies_stored_layout(fake_plugins, monkeypatch):
     """Remove reflows with the persisted warroom layout."""
     from server._db import _now, db
@@ -485,6 +538,57 @@ def test_warroom_remove_reapplies_stored_layout(fake_plugins, monkeypatch):
     assert "error" not in result
     assert result["remaining_members"] == 1
     assert select_layout_calls == [("main", "layout-rm", "main-horizontal")]
+
+
+def test_warroom_remove_short_name_ambiguous_within_same_warroom(
+    fake_plugins, fake_codex_skills, monkeypatch
+):
+    """Short-name removal stays ambiguous when the target warroom has both matches."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    cache = fake_codex_skills
+    (cache / "backend-engineer").mkdir()
+    (cache / "backend-engineer" / "SKILL.md").write_text(
+        '---\n'
+        'name: backend-engineer\n'
+        'description: "Codex backend engineer"\n'
+        '---\n'
+    )
+
+    now = _now()
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("mix-amb", "main", "mix-amb", "/tmp", now, "active"),
+        )
+        claude_id = _insert_member(
+            conn,
+            warroom_id="mix-amb",
+            role="helioy-tools:backend-engineer",
+            tmux_target="main:1.0",
+            pane_id="%10",
+            now=now,
+            runtime="claude",
+        )
+        codex_id = _insert_member(
+            conn,
+            warroom_id="mix-amb",
+            role="codex:backend-engineer",
+            tmux_target="main:1.1",
+            pane_id="%11",
+            now=now,
+            runtime="codex",
+        )
+
+    result = wm.warroom_remove(name="mix-amb", agent="backend-engineer")
+    assert "error" in result
+    assert "ambiguous" in result["error"].lower()
+    candidate_ids = {c["warroom_member_id"] for c in result["candidates"]}
+    assert candidate_ids == {claude_id, codex_id}
 
 
 def test_warroom_remove_by_member_id(fake_plugins, monkeypatch):
