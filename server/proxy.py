@@ -77,17 +77,26 @@ class HotReloadProxy:
         )
 
     async def _replay_init(self) -> None:
-        if not self.init_line or not self.proc:
+        if (
+            not self.init_line
+            or not self.proc
+            or self.proc.stdin is None
+            or self.proc.stdout is None
+        ):
             return
+        proc = self.proc
+        assert proc.stdin is not None and proc.stdout is not None
+        writer = proc.stdin
+        reader = proc.stdout
         # Send initialize to new inner server
-        self.proc.stdin.write(self.init_line)
-        await self.proc.stdin.drain()
+        writer.write(self.init_line)
+        await writer.drain()
         # Discard inner server's initialize response; outer client already got one
-        await self.proc.stdout.readline()
+        await reader.readline()
         # Complete the inner handshake
         notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
-        self.proc.stdin.write(notif.encode())
-        await self.proc.stdin.drain()
+        writer.write(notif.encode())
+        await writer.drain()
 
     async def _restart(self) -> None:
         self._restarting = True
@@ -97,10 +106,12 @@ class HotReloadProxy:
             await self.proc.wait()
         await self._spawn()
         await self._replay_init()
+        assert self.proc is not None and self.proc.stdin is not None
+        stdin = self.proc.stdin
         for msg in self.pending:
-            self.proc.stdin.write(msg)
+            stdin.write(msg)
         if self.pending:
-            await self.proc.stdin.drain()
+            await stdin.drain()
         self.pending.clear()
         self._restarting = False
         _log("inner server ready")
@@ -118,23 +129,25 @@ class HotReloadProxy:
                     self.init_line = line
             except (json.JSONDecodeError, AttributeError):
                 pass
-            if self._restarting or not self.proc:
+            if self._restarting or not self.proc or self.proc.stdin is None:
                 self.pending.append(line)
             else:
-                self.proc.stdin.write(line)
+                writer = self.proc.stdin
+                writer.write(line)
                 try:
-                    await self.proc.stdin.drain()
+                    await writer.drain()
                 except BrokenPipeError:
                     self.pending.append(line)
 
     async def _inner_to_stdout(self) -> None:
         out = sys.stdout.buffer
         while True:
-            if self._restarting or not self.proc:
+            if self._restarting or not self.proc or self.proc.stdout is None:
                 await asyncio.sleep(0.005)
                 continue
+            stdout = self.proc.stdout
             try:
-                line = await self.proc.stdout.readline()
+                line = await stdout.readline()
             except Exception:
                 await asyncio.sleep(0.005)
                 continue

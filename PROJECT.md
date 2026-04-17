@@ -2,14 +2,14 @@
 
 ## Overview
 
-helioy-bus is a pair of MCP servers that provide inter-agent communication and multi-agent orchestration for Claude Code instances. It is part of the [Helioy ecosystem](https://github.com/helioy), which includes context-matters (structured context store), attention-matters (geometric memory), fmm (code structural intelligence), nancyr (multi-agent orchestrator), markdown-matters (markdown indexing), and helioy-plugins (Claude Code plugin layer).
+helioy-bus is a pair of MCP servers that provide inter-agent communication and multi-agent orchestration for coding-agent runtimes such as Claude Code and Codex. It is part of the [Helioy ecosystem](https://github.com/helioy), which includes context-matters (structured context store), attention-matters (geometric memory), fmm (code structural intelligence), nancyr (multi-agent orchestrator), markdown-matters (markdown indexing), and helioy-plugins (Claude Code plugin layer).
 
-The bus solves a specific problem: Claude Code sessions are isolated stdio processes with no built-in way to discover or communicate with each other. helioy-bus bridges this gap using the filesystem as shared memory and tmux as the notification channel. The warroom extends this with coordinated multi-agent spawning and lifecycle management.
+The bus solves a specific problem: coding-agent sessions are isolated stdio processes with no built-in way to discover or communicate with each other. helioy-bus bridges this gap using the filesystem as shared memory and tmux as the notification channel. The warroom extends this with coordinated multi-agent spawning and lifecycle management.
 
 ## Architecture
 
 ```
-Claude Code A          Claude Code B          Claude Code C
+Agent Runtime A        Agent Runtime B        Agent Runtime C
      |                      |                      |
   [stdio]               [stdio]               [stdio]
      |                      |                      |
@@ -23,11 +23,11 @@ helioy-warroom MCP     helioy-warroom MCP     helioy-warroom MCP
                                  presets/
 ```
 
-Each Claude Code instance spawns its own helioy-bus process (and optionally a helioy-warroom process). There is no central daemon. Coordination happens through:
+Each runtime instance spawns its own helioy-bus process (and optionally a helioy-warroom process). There is no central daemon. Coordination happens through:
 
 1. **SQLite registry** (`registry.db`): Agents register on startup and are pruned lazily when their tmux pane dies. WAL mode enables concurrent reads across processes.
 2. **File-based mailboxes** (`inbox/{agent_id}/*.json`): Messages are atomic JSON files written via temp + rename. Read messages move to `inbox/{agent_id}/archive/` with 7-day TTL.
-3. **tmux nudges**: When a message arrives, the bus sends `"you have mail!"` + Enter to the recipient's tmux pane, waking idle Claude sessions. Nudges are throttled (30s per recipient) and handle copy-mode gracefully.
+3. **tmux nudges**: When a message arrives, the bus may send `"you have mail!"` + Enter to a known Claude recipient's tmux pane. Nudges are throttled (30s per recipient), suppressed for unsupported runtimes, and handle copy-mode gracefully.
 4. **Warroom orchestration**: Spawns coordinated agent layouts in tmux windows, manages lifecycle, and supports presets for repeatable configurations.
 
 ## File Structure
@@ -56,10 +56,10 @@ server/
 
 plugin/
   hooks/
-    bus-register.sh      # SessionStart: registers agent on the bus
+    bus-register.sh      # SessionStart or wrapper-start: registers the runtime on the bus
     bus-unregister.sh    # SessionStop: unregisters agent
     bus-prune.sh         # Prunes stale agents from registry
-    check-mail.sh        # PreToolUse: notifies agent of unread messages
+    check-mail.sh        # PreToolUse/UserPromptSubmit: summarizes unread mail without draining inbox
     stop-check-mail.sh   # Stop: halts mail checking
     token-capture.sh     # PreToolUse: captures token usage from tmux status line
     lib/
@@ -90,11 +90,11 @@ tests/
 
 ### whoami
 
-Returns the calling agent's full identity record from the registry: agent_id, agent_type, tmux_target, cwd, session_id, registered_at, and token_usage.
+Returns the calling agent's full identity record from the registry: agent_id, agent_type, runtime, tmux_target, cwd, session_id, registered_at, and token_usage.
 
 ### register_agent
 
-Registers a Claude Code instance in the SQLite registry. Identity is derived from the working directory basename and tmux target (e.g., `helioy-bus:main:1.0`). Accepts an optional profile dict for structural identity: `owns`, `consumes`, `capabilities`, `domain`, `skills`.
+Registers a runtime instance in the SQLite registry. Identity is derived from the working directory basename and tmux target (e.g., `helioy-bus:main:1.0`). Accepts an optional runtime id plus an optional profile dict for structural identity: `owns`, `consumes`, `capabilities`, `domain`, `skills`.
 
 ### unregister_agent
 
@@ -102,7 +102,7 @@ Removes an agent from the registry by ID. Called on session teardown via the `bu
 
 ### list_agents
 
-Returns all registered agents. Performs lazy liveness pruning by checking whether each agent's tmux pane still exists. Supports `tmux_filter` to scope results to a tmux session or session:window.
+Returns all registered agents, including their runtime. Performs lazy liveness pruning by checking whether each agent's tmux pane still exists. Supports `tmux_filter` to scope results to a tmux session or session:window.
 
 ### heartbeat
 
@@ -118,7 +118,7 @@ Delivers a message to one or more agents. Supports three addressing modes:
 
 Each delivery writes an atomic JSON file to the recipient's inbox directory. The payload includes `id`, `from`, `to`, `reply_to`, `topic`, `content`, and `sent_at`.
 
-After delivery, the bus optionally sends a tmux nudge (literal keystroke injection) to wake idle recipients. Nudges are throttled to once per 30 seconds per recipient. The throttle resets when the recipient has unread messages. Copy-mode is detected and exited before sending keystrokes.
+After delivery, the bus optionally sends a tmux nudge (literal keystroke injection) to wake idle recipients when the recipient runtime supports that path. Nudges are currently Claude-only. They are throttled to once per 30 seconds per recipient, with re-nudging allowed while unread messages remain. Copy-mode is detected and exited before sending keystrokes.
 
 ### get_messages
 
@@ -140,15 +140,15 @@ Spawns a named warroom window with specialist agents (e.g., `backend-engineer`, 
 
 ### warroom_status
 
-Returns the current state of all warroom windows: panes, agent types, registration status, and liveness.
+Returns warroom rows with `warroom_id`, tmux coordinates, `cwd`, `layout`, `runtime_policy`, `metadata`, `status`, `created_at`, and a `members` array. Each member includes the desired runtime/role, reconciliation state, live registration fields, tmux coordinates, timestamps, and token usage when available.
 
 ### warroom_add
 
-Adds a new agent pane to an existing warroom window.
+Adds a new agent pane to an existing warroom window and returns `{warroom_id, added, member_count}` where `added` is the spawned pane record annotated with `warroom_member_id`, `desired_role`, `desired_runtime`, and `spawn_order`.
 
 ### warroom_remove
 
-Removes an agent pane from a warroom window and unregisters it from the bus.
+Removes a member from a warroom window and returns `{warroom_id, removed: {warroom_member_id, desired_role}, remaining_members, warroom_killed}`.
 
 ### warroom_kill
 
@@ -172,6 +172,7 @@ CREATE TABLE agents (
     pid           INTEGER,
     session_id    TEXT NOT NULL DEFAULT '',
     agent_type    TEXT NOT NULL DEFAULT 'general',
+    runtime       TEXT NOT NULL DEFAULT 'unknown',
     profile       TEXT,
     token_usage   TEXT NOT NULL DEFAULT '{}',
     registered_at TEXT NOT NULL,
@@ -214,7 +215,11 @@ CREATE TABLE warroom_members (
 The `desired_*` columns record the orchestrator's intent at spawn time.
 The reconciler (`services/reconciliation.backfill_warroom_member_agent_ids`)
 joins members to `agents` on `tmux_target` and writes `agent_instance_id`
-back, advancing `state` from `pending` to `active`.
+back, reconciling `state` between `pending` and `active`.
+
+`warrooms.runtime_policy` and `warrooms.metadata` are schema-reserved surface.
+They are returned by `warroom_status`, persisted through the shared warroom row,
+and currently remain unpopulated (`NULL`) in this branch.
 
 ## Message Format
 
@@ -251,17 +256,19 @@ helioy-bus-initdb    = "server._db:_initdb_cli"
 
 ## Hot-Reload Proxy
 
-`server/proxy.py` wraps either MCP server for development. It watches `server/` for Python file changes and restarts the inner process transparently, replaying the MCP `initialize` handshake so the Claude Code client never sees a disconnect.
+`server/proxy.py` wraps either MCP server for development. It watches `server/` for Python file changes and restarts the inner process transparently, replaying the MCP `initialize` handshake so the outer MCP client never sees a disconnect.
 
 ## Development
 
 ```bash
-just check                 # ruff + mypy
+just check                 # ruff + mypy across server/
 just build                 # uv sync
 just test                  # pytest
 ```
 
-All quality gates run locally. No GitHub Actions workflow is checked in; CI expectations are captured by the `just` recipes and must pass before any commit.
+No GitHub Actions workflow is checked in. The current local gate is the `just`
+surface: `just check` for lint, hook lint, and Python type-checking across
+`server/`, plus `just test` for pytest coverage.
 
 ## Design Notes
 
@@ -276,6 +283,13 @@ The PreToolUse hook runs synchronously before the calling agent's MCP server is 
 ### Legacy warroom_members migration shim
 
 `_migrate_warroom_members` in `server/_db.py` rebuilds pre-stable-member-id and intermediate schemas into the canonical shape on startup. It stays in place because helioy-bus databases live in each user's `~/.helioy/bus/` and may predate ALP-1787. The shim is a no-op on already-migrated databases. Remove after a future fleet-wide reset pass.
+
+### runtime_policy and metadata are deferred schema surface
+
+`warrooms.runtime_policy` and `warrooms.metadata` exist so the persisted row and
+status payload have a stable place for future orchestration policy. This branch
+does not populate them yet; callers should treat them as nullable, forward
+compatible fields rather than active behavior knobs.
 
 ## Dependencies
 

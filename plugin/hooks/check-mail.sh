@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# check-mail.sh: PreToolUse hook for helioy-bus
+# check-mail.sh: hook context surfacing for helioy-bus
 #
-# Fires on every matched tool use. Drains the agent's inbox and injects
-# pending messages into Claude's context via additionalContext.
+# Fires on every matched tool use and prompt submit. Does not drain the
+# inbox. It only summarizes unread mail into additionalContext so the
+# agent can call get_messages explicitly.
 #
 # Hook output on messages present:
-#   {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "..."}}
+#   {"hookSpecificOutput": {"hookEventName": "PreToolUse|UserPromptSubmit", "additionalContext": "..."}}
 #
 # Exit 0 always, never block tool use.
 #
-# Matcher (in ~/.claude/settings.json):
+# Matcher (for the PreToolUse hook in ~/.claude/settings.json):
 #   TodoWrite|ToolSearch|WebFetch|WebSearch|Agent|Read|Write|Edit|Glob|Bash
 
 set -euo pipefail
@@ -44,7 +45,7 @@ if [[ ${#MSG_FILES[@]} -eq 0 ]]; then
     exit 0
 fi
 
-# Build notification: senders only, do NOT drain. get_messages does that.
+# Build notification: senders only, do not drain. get_messages does that.
 SENDERS=""
 COUNT=0
 

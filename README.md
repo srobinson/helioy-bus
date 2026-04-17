@@ -1,12 +1,12 @@
 # helioy-bus
 
-Inter-agent message bus for Claude Code instances. Enables multiple Claude Code sessions running in tmux panes to discover each other, exchange messages, and coordinate work through a shared filesystem-based transport.
+Inter-agent message bus for coding-agent runtimes such as Claude Code and Codex. Enables multiple agent sessions running in tmux panes to discover each other, exchange messages, and coordinate work through a shared filesystem-based transport.
 
 ## How it works
 
-Each Claude Code instance spawns `helioy-bus` as an MCP server over stdio. Shared state lives in `~/.helioy/bus/`: a SQLite registry for agent presence and file-based mailboxes for message delivery. Any agents sharing the same filesystem share the same bus.
+Each runtime instance spawns `helioy-bus` as an MCP server over stdio. Shared state lives in `~/.helioy/bus/`: a SQLite registry for agent presence and file-based mailboxes for message delivery. Any agents sharing the same filesystem share the same bus.
 
-Messages are delivered as atomic JSON files (temp + rename) to prevent partial reads. Recipients are woken via tmux `send-keys` nudges, throttled to one per 30 seconds per recipient.
+Messages are delivered as atomic JSON files (temp + rename) to prevent partial reads. Recipients may be woken via tmux `send-keys` nudges when their runtime supports that path. Nudges are currently Claude-only and are throttled to one per 30 seconds per recipient.
 
 ## Setup
 
@@ -16,7 +16,7 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 uv sync
 ```
 
-The MCP server and hooks are managed by [helioy-plugins](https://github.com/srobinson/helioy-plugins). Once the plugin is activated, Claude Code instances register on SessionStart and deregister on SessionEnd automatically.
+The MCP server and hooks are managed by [helioy-plugins](https://github.com/srobinson/helioy-plugins). Once the plugin is activated, Claude sessions register on SessionStart and deregister on SessionEnd automatically. Codex sessions register through the launch wrapper used by the Codex runtime adapter.
 
 To register manually as an MCP server:
 
@@ -37,12 +37,27 @@ The proxy provides hot-reload during development. For production, point directly
 
 | Tool | Purpose |
 |------|---------|
-| `register_agent` | Register a Claude Code instance on the bus |
+| `register_agent` | Register a runtime instance on the bus |
 | `unregister_agent` | Remove an agent from the registry |
 | `list_agents` | List registered agents with optional tmux session/window filtering |
 | `heartbeat` | Update liveness timestamp for an agent |
 | `send_message` | Send a message to an agent, a role, or broadcast to all |
 | `get_messages` | Read and archive unread messages from an agent's inbox |
+
+## Warroom MCP Tools
+
+The repo also ships `helioy-warroom`, a companion MCP server for multi-agent orchestration:
+
+| Tool | Purpose |
+|------|---------|
+| `warroom_discover` | Discover agent and skill catalogues across registered runtimes |
+| `warroom_spawn_repos` | Spawn one general-purpose pane per Helioy repo |
+| `warroom_spawn` | Spawn a named warroom with runtime-scoped agent validation |
+| `warroom_status` | Return live warroom rows plus member registration and liveness state |
+| `warroom_add` | Add a member pane to an active warroom |
+| `warroom_remove` | Remove a member by stable member id or unique role |
+| `warroom_kill` | Kill one warroom or all active warrooms |
+| `warroom_presets` / `warroom_save_preset` | Read and persist reusable team compositions |
 
 ## Addressing
 
@@ -52,7 +67,7 @@ The proxy provides hot-reload during development. For production, point directly
 
 ## Warroom
 
-`plugin/scripts/warroom.sh` spawns multi-agent tmux layouts. Symlink it for convenience:
+`plugin/scripts/warroom.sh` remains as a legacy convenience wrapper around tmux workflows. Symlink it if you still want the shell entrypoint:
 
 ```bash
 ln -sf "$(pwd)/plugin/scripts/warroom.sh" ~/.helioy/warroom.sh
@@ -80,7 +95,7 @@ Examples:
 - `fmm:general:main:2.1` (repo-mode)
 - `helioy-bus:backend-engineer:main:3.1` (role-mode)
 
-This title is the source of truth for agent identity. The hooks read it at SessionStart to derive `agent_id` and `agent_type`.
+This title is the source of truth for agent identity. The Claude hooks read it at SessionStart, and the Codex wrapper uses the same identity convention.
 
 ## Debug Scripts
 
@@ -92,8 +107,7 @@ python scripts/inboxes.py   # show inbox message counts
 ## Development
 
 ```bash
-uv sync                    # install dependencies
-uv run pytest              # run tests
-uv run ruff check .        # lint
-uv run mypy server/        # type check
+just build                 # install dependencies
+just check                 # ruff, mypy across server/, shellcheck when installed
+just test                  # run pytest
 ```

@@ -79,7 +79,16 @@ def warroom_spawn_repos(
             the default adapter.
 
     Returns:
-        {warroom_id, tmux_window, members: [...], spawned_at}
+        {
+          warroom_id,
+          tmux_window,
+          members: [{warroom_member_id, desired_role, desired_runtime,
+                     desired_repo, spawn_order, agent_type, qualified_name,
+                     tmux_target, pane_id, runtime}],
+          spawned_at,
+          messaging: {instruction},
+          errors?: [...]
+        }
     """
     return warroom.spawn_repos(window=window, layout=layout, runtime=runtime)
 
@@ -110,7 +119,16 @@ def warroom_spawn(
             Empty string uses the default adapter.
 
     Returns:
-        {warroom_id, tmux_window, members: [...], spawned_at}
+        {
+          warroom_id,
+          tmux_window,
+          members: [{warroom_member_id, desired_role, desired_runtime,
+                     spawn_order, agent_type, qualified_name,
+                     tmux_target, pane_id, runtime}],
+          spawned_at,
+          messaging: {instruction, member_types},
+          errors?: [...]
+        }
     """
     return warroom.spawn(
         name=name, agents=agents, cwd=cwd, layout=layout, runtime=runtime
@@ -149,8 +167,14 @@ def warroom_status(
         name: Specific warroom name. Empty returns all active warrooms.
 
     Returns:
-        List of warroom status dicts with member details including
-        registration state and pane liveness.
+        List of warroom dicts:
+        {warroom_id, tmux_session, tmux_window, cwd, layout,
+         runtime_policy, metadata, status, created_at, members: [...]}
+
+        Each member includes:
+        {warroom_member_id, desired_runtime, desired_role, desired_repo,
+         state, agent_instance_id, spawn_order, agent_type, tmux_target,
+         pane_id, registered, pane_alive, created_at, updated_at, token_usage}
     """
     reconciliation.backfill_warroom_member_agent_ids(name)
     return warroom.status(name=name)
@@ -179,7 +203,11 @@ def warroom_add(
             Empty string uses the default adapter.
 
     Returns:
-        {warroom_id, added: {warroom_member_id, role, tmux_target, pane_id, ...}, member_count}
+        {warroom_id,
+         added: {warroom_member_id, desired_role, desired_runtime,
+                 spawn_order, agent_type, qualified_name, tmux_target,
+                 pane_id, runtime},
+         member_count}
     """
     return warroom.add(name=name, agent=agent, cwd=cwd, runtime=runtime)
 
@@ -206,7 +234,10 @@ def warroom_remove(
         member_id: Stable warroom_member_id. Wins over `agent` if both given.
 
     Returns:
-        {warroom_id, removed: {warroom_member_id, role}, remaining_members, warroom_killed}
+        {warroom_id,
+         removed: {warroom_member_id, desired_role},
+         remaining_members,
+         warroom_killed}
     """
     return warroom.remove(name=name, agent=agent, member_id=member_id)
 

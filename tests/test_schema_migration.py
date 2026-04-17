@@ -5,7 +5,7 @@ The canonical schema uses `desired_runtime`, `desired_role`, `desired_repo`,
 exist in the wild and both must upgrade cleanly:
 
 1. Pre-stable-id: (warroom_id, agent_type) composite PK, no runtime column.
-   Covered by `tests/test_warroom_server.py::test_warroom_members_legacy_schema_migrates`.
+   Covered here by `test_warroom_members_legacy_schema_migrates`.
 2. Intermediate stable-id: warroom_member_id present but columns named
    `runtime`/`role`/`repo`/`agent_id`/`spawned_at`. Covered here.
 """
