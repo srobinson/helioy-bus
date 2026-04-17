@@ -296,6 +296,43 @@ def test_warroom_add_to_existing(fake_plugins, monkeypatch):
     assert result["member_count"] == 2
 
 
+def test_warroom_add_preserves_stored_layout(fake_plugins, monkeypatch):
+    """Add uses the persisted warroom layout instead of forcing tiled."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    seen_layouts: list[str] = []
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, layout, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("layout-add", "main", "layout-add", "/tmp/project", "even-horizontal", now, "active"),
+        )
+        _insert_member(
+            conn, warroom_id="layout-add", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.0", pane_id="%10", now=now,
+        )
+
+    def mock_spawn_pane(**kw):
+        seen_layouts.append(kw["layout"])
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": "main:1.1",
+            "pane_id": "%11",
+        }
+
+    monkeypatch.setattr(gateway, "spawn_pane", mock_spawn_pane)
+
+    result = wm.warroom_add(name="layout-add", agent="frontend-engineer")
+    assert "error" not in result
+    assert seen_layouts == ["even-horizontal"]
+
+
 def test_warroom_add_allows_duplicate_role(fake_plugins, monkeypatch):
     """Adding the same role twice creates a second distinct member."""
     from server._db import _now, db
@@ -408,6 +445,46 @@ def test_warroom_remove_agent(fake_plugins, monkeypatch):
     assert result["removed"]["warroom_member_id"] == be_id
     assert result["remaining_members"] == 1
     assert result["warroom_killed"] is False
+
+
+def test_warroom_remove_reapplies_stored_layout(fake_plugins, monkeypatch):
+    """Remove reflows with the persisted warroom layout."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    select_layout_calls: list[tuple[str, str, str]] = []
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, layout, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("layout-rm", "main", "layout-rm", "/tmp", "main-horizontal", now, "active"),
+        )
+        _insert_member(
+            conn, warroom_id="layout-rm", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.0", pane_id="%10", now=now, spawn_order=0,
+        )
+        _insert_member(
+            conn, warroom_id="layout-rm", role="helioy-tools:frontend-engineer",
+            tmux_target="main:1.1", pane_id="%11", now=now, spawn_order=1,
+        )
+
+    monkeypatch.setattr(gateway, "kill_pane", lambda pane_id: True)
+    monkeypatch.setattr(
+        gateway,
+        "select_layout",
+        lambda session, window, layout="tiled": select_layout_calls.append(
+            (session, window, layout)
+        ) or True,
+    )
+
+    result = wm.warroom_remove(name="layout-rm", agent="backend-engineer")
+    assert "error" not in result
+    assert result["remaining_members"] == 1
+    assert select_layout_calls == [("main", "layout-rm", "main-horizontal")]
 
 
 def test_warroom_remove_by_member_id(fake_plugins, monkeypatch):

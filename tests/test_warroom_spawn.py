@@ -65,6 +65,16 @@ def test_warroom_spawn_validates_layout(fake_plugins, monkeypatch):
     assert "layout" in result["error"].lower()
 
 
+def test_warroom_spawn_repos_validates_layout(monkeypatch):
+    """Repo-mode spawn rejects invalid layout values."""
+    import server.warroom_server as wm
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+    result = wm.warroom_spawn_repos(window="repo-test", layout="invalid")
+    assert "error" in result
+    assert "layout" in result["error"].lower()
+
+
 def test_warroom_spawn_with_mocked_tmux(fake_plugins, monkeypatch):
     """Full spawn flow with mocked tmux calls records warroom in DB."""
     import server.warroom_server as wm

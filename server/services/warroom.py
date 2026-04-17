@@ -186,6 +186,9 @@ def spawn_repos(
     runtime: str = "",
 ) -> dict:
     """Spawn one general-role agent per helioy repo in a single tmux window."""
+    if layout not in VALID_LAYOUTS:
+        return {"error": f"Invalid layout. Choose from: {', '.join(sorted(VALID_LAYOUTS))}"}
+
     session, err = resolve_tmux_session()
     if err:
         return err
@@ -533,7 +536,7 @@ def add(*, name: str, agent: str, cwd: str = "", runtime: str = "") -> dict:
                 agent_type=agent_def["name"],
                 qualified_name=qn,
                 is_first=False,
-                layout="tiled",
+                layout=wr["layout"],
                 runtime=runtime_id,
             )
         except RuntimeError as e:
@@ -627,11 +630,11 @@ def remove(*, name: str, agent: str = "", member_id: str = "") -> dict:
             warroom_killed = True
         else:
             wr = conn.execute(
-                "SELECT tmux_session, tmux_window FROM warrooms WHERE warroom_id = ?",
+                "SELECT tmux_session, tmux_window, layout FROM warrooms WHERE warroom_id = ?",
                 (name,),
             ).fetchone()
             if wr:
-                gateway.select_layout(wr["tmux_session"], wr["tmux_window"], "tiled")
+                gateway.select_layout(wr["tmux_session"], wr["tmux_window"], wr["layout"])
 
     return {
         "warroom_id": name,
