@@ -10,6 +10,7 @@ single `tmp_path/bus` backs both sides.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -19,6 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-register.sh"
 UNREGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-unregister.sh"
 CODEX_LAUNCH = REPO_ROOT / "plugin" / "hooks" / "codex-launch.sh"
+CHECK_MAIL_HOOK = REPO_ROOT / "plugin" / "hooks" / "check-mail.sh"
+TOKEN_CAPTURE_HOOK = REPO_ROOT / "plugin" / "hooks" / "token-capture.sh"
 RESOLVE_IDENTITY_TESTS = REPO_ROOT / "tests" / "test_resolve_identity.sh"
 
 SMOKE_PROJECT_DIR = "/tmp/helioy-shell-hooks-repo"
@@ -320,3 +323,221 @@ def test_codex_launch_wrapper_cleans_up_when_codex_fails(
     finally:
         conn.close()
     assert count == 0, "unregister trap must fire even on codex failure"
+
+
+# ── check-mail.sh: unread inbox surfacing via additionalContext ──────────────
+
+
+def _run_check_mail(
+    bus_dir: Path, *, stdin: str = ""
+) -> subprocess.CompletedProcess:
+    # check-mail.sh reads HELIOY_BUS_INBOX (not HELIOY_BUS_DIR); isolate both.
+    return subprocess.run(
+        ["bash", str(CHECK_MAIL_HOOK)],
+        input=stdin,
+        env=_hook_env(bus_dir, HELIOY_BUS_INBOX=str(bus_dir / "inbox")),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _seed_inbox_message(
+    bus_dir: Path, agent_id: str, *, sender: str, filename: str
+) -> None:
+    mailbox = bus_dir / "inbox" / agent_id
+    mailbox.mkdir(parents=True, exist_ok=True)
+    (mailbox / filename).write_text(
+        json.dumps(
+            {"from": sender, "to": agent_id, "content": "hi", "topic": ""}
+        )
+    )
+
+
+def test_check_mail_surfaces_pending_messages_via_additional_context(
+    isolated_bus,
+):
+    """Two seeded messages → hook emits PreToolUse additionalContext listing both senders."""
+    assert _run_register(isolated_bus).returncode == 0
+    _seed_inbox_message(
+        isolated_bus, SMOKE_AGENT_ID, sender="alpha", filename="0001.json"
+    )
+    _seed_inbox_message(
+        isolated_bus, SMOKE_AGENT_ID, sender="beta", filename="0002.json"
+    )
+
+    result = _run_check_mail(isolated_bus)
+    assert result.returncode == 0, result.stderr
+
+    payload = json.loads(result.stdout)
+    hook_out = payload["hookSpecificOutput"]
+    assert hook_out["hookEventName"] == "PreToolUse"
+    ctx = hook_out["additionalContext"]
+    assert "2 pending message(s)" in ctx
+    assert f"'{SMOKE_AGENT_ID}'" in ctx
+    assert "alpha" in ctx
+    assert "beta" in ctx
+
+
+def test_check_mail_switches_event_name_for_user_prompt_submit_input(
+    isolated_bus,
+):
+    """stdin carrying a `prompt` field flips event to UserPromptSubmit."""
+    assert _run_register(isolated_bus).returncode == 0
+    _seed_inbox_message(
+        isolated_bus, SMOKE_AGENT_ID, sender="alpha", filename="0001.json"
+    )
+
+    result = _run_check_mail(isolated_bus, stdin='{"prompt":"hello"}')
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+
+
+def test_check_mail_does_not_drain_inbox(isolated_bus):
+    """Hook is read-only: messages stay in the inbox for get_messages to drain."""
+    assert _run_register(isolated_bus).returncode == 0
+    _seed_inbox_message(
+        isolated_bus, SMOKE_AGENT_ID, sender="alpha", filename="0001.json"
+    )
+    mailbox = isolated_bus / "inbox" / SMOKE_AGENT_ID
+    before = {p.name for p in mailbox.iterdir()}
+
+    assert _run_check_mail(isolated_bus).returncode == 0
+
+    after = {p.name for p in mailbox.iterdir()}
+    assert before == after
+
+
+def test_check_mail_silent_when_inbox_empty(isolated_bus):
+    """Registered agent with no pending messages → hook emits nothing.
+
+    bus-register.sh creates the mailbox directory on register, so this
+    exercises the 0-matching-files branch of the `find | sort` pipeline.
+    """
+    assert _run_register(isolated_bus).returncode == 0
+    mailbox = isolated_bus / "inbox" / SMOKE_AGENT_ID
+    assert mailbox.is_dir()
+    assert list(mailbox.glob("*.json")) == []
+
+    result = _run_check_mail(isolated_bus)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+# ── token-capture.sh: real tmux pane → registry token_usage ──────────────────
+
+
+def _install_tmux_capture_stub(stub_dir: Path) -> None:
+    """Write a fake `tmux` that echoes $_HELIOY_TEST_TMUX_CAPTURE for capture-pane.
+
+    Passing the fake pane content via env (not baked into the script) means
+    each test can vary capture output without rewriting the stub.
+    """
+    stub_dir.mkdir(exist_ok=True)
+    stub = stub_dir / "tmux"
+    stub.write_text(
+        '#!/bin/sh\n'
+        'if [ "$1" = "capture-pane" ]; then\n'
+        '    printf %s "$_HELIOY_TEST_TMUX_CAPTURE"\n'
+        '    exit 0\n'
+        'fi\n'
+        'exit 1\n'
+    )
+    stub.chmod(0o755)
+
+
+def _run_token_capture(
+    bus_dir: Path,
+    tmp_path: Path,
+    capture_output: str,
+    *,
+    tmux_pane: str = "%0",
+) -> subprocess.CompletedProcess:
+    stub_dir = tmp_path / "stub-bin"
+    _install_tmux_capture_stub(stub_dir)
+    env = _hook_env(
+        bus_dir,
+        TMUX_PANE=tmux_pane,
+        _HELIOY_TEST_TMUX_CAPTURE=capture_output,
+    )
+    env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+    return subprocess.run(
+        ["bash", str(TOKEN_CAPTURE_HOOK)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _token_usage_for(bus_dir: Path, agent_id: str) -> dict:
+    conn = sqlite3.connect(bus_dir / "registry.db")
+    try:
+        row = conn.execute(
+            "SELECT token_usage FROM agents WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return {} if row is None else json.loads(row[0])
+
+
+def test_token_capture_writes_token_usage_to_registry(isolated_bus, tmp_path):
+    """Happy path: hook extracts `<N> tokens` from stubbed pane and updates the row."""
+    assert _run_register(isolated_bus).returncode == 0
+
+    status_line = "session | claude | 4.7 opus | 12345 tokens · auto-compact\n"
+    result = _run_token_capture(isolated_bus, tmp_path, status_line)
+    assert result.returncode == 0, result.stderr
+
+    usage = _token_usage_for(isolated_bus, SMOKE_AGENT_ID)
+    assert usage["tokens"] == 12345
+    assert usage["updated"].endswith("Z")
+
+
+def test_token_capture_takes_last_match_on_status_line(isolated_bus, tmp_path):
+    """The grep pipeline pins the *last* `<N> tokens` match; guard against drift."""
+    assert _run_register(isolated_bus).returncode == 0
+    pane = (
+        "100 tokens (input)\n"
+        "200 tokens (output)\n"
+        "42 tokens total\n"
+    )
+    result = _run_token_capture(isolated_bus, tmp_path, pane)
+    assert result.returncode == 0, result.stderr
+    assert _token_usage_for(isolated_bus, SMOKE_AGENT_ID)["tokens"] == 42
+
+
+def test_token_capture_no_ops_without_tmux_pane(isolated_bus, tmp_path):
+    """Missing TMUX_PANE → early exit, registry untouched."""
+    assert _run_register(isolated_bus).returncode == 0
+
+    env = _hook_env(isolated_bus)  # _hook_env already strips TMUX_PANE
+    result = subprocess.run(
+        ["bash", str(TOKEN_CAPTURE_HOOK)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert _token_usage_for(isolated_bus, SMOKE_AGENT_ID) == {}
+
+
+def test_token_capture_no_ops_without_pid_file(isolated_bus, tmp_path):
+    """No PID file → hook cannot resolve agent_id; DB must remain empty."""
+    result = _run_token_capture(isolated_bus, tmp_path, "99 tokens\n")
+    assert result.returncode == 0
+    # No register ever ran, so registry.db never got bootstrapped.
+    assert not (isolated_bus / "registry.db").exists()
+
+
+def test_token_capture_no_ops_when_tokens_absent_from_pane(isolated_bus, tmp_path):
+    """No `<digits> tokens` match → registry row keeps its default empty usage."""
+    assert _run_register(isolated_bus).returncode == 0
+    result = _run_token_capture(
+        isolated_bus, tmp_path, "prompt > no relevant content here\n"
+    )
+    assert result.returncode == 0
+    assert _token_usage_for(isolated_bus, SMOKE_AGENT_ID) == {}

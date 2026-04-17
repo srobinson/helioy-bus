@@ -2,8 +2,8 @@
 
 This is the single operational workflow exercise: a real SessionStart
 hook registers the agent, the MCP tool surface sends a message to a
-peer, listing and token capture reach the live registry row, the peer
-reads and archives the message, and the SessionEnd hook cleans up.
+peer, the real token-capture hook updates token_usage, the peer reads
+and archives the message, and the SessionEnd hook cleans up.
 
 If any boundary between the shell hooks, the Python services, and the
 SQLite registry is wrong, this test fails — catching failures that the
@@ -12,16 +12,15 @@ in-process handler tests cannot see because they bypass the hooks.
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import subprocess
-from datetime import UTC, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-register.sh"
 UNREGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-unregister.sh"
+TOKEN_CAPTURE_HOOK = REPO_ROOT / "plugin" / "hooks" / "token-capture.sh"
 
 SMOKE_PROJECT_DIR = "/tmp/helioy-smoke-repo"
 SMOKE_AGENT_ID = "helioy-smoke-repo:general"
@@ -50,10 +49,9 @@ def _run_hook(
     )
 
 
-def test_full_lifecycle_smoke(isolated_bus, set_sender):
+def test_full_lifecycle_smoke(isolated_bus, set_sender, tmp_path):
     """Register via hook, send, list, capture tokens, read, unregister via hook."""
     import server.bus_server as bm
-    from server import _db
 
     # 1. Register the smoke agent via the real SessionStart hook.
     reg = _run_hook(
@@ -86,19 +84,42 @@ def test_full_lifecycle_smoke(isolated_bus, set_sender):
     active_ids = {a["agent_id"] for a in bm.list_agents()}
     assert {SMOKE_AGENT_ID, PEER_AGENT_ID} <= active_ids
 
-    # 5. Simulate token capture — token-capture.sh writes token_usage via
-    # the same SQL path. Exercise the read side through whoami so a
-    # misaligned JSON decode or column rename surfaces here.
-    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    usage = {"tokens": 4242, "updated": now}
-    with _db.db() as conn:
-        conn.execute(
-            "UPDATE agents SET token_usage = ? WHERE agent_id = ?",
-            (json.dumps(usage), SMOKE_AGENT_ID),
-        )
+    # 5. Capture tokens via the real token-capture.sh hook with a tmux
+    # capture-pane stub on PATH. Exercises extraction, DB write, and the
+    # whoami read path end-to-end.
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "tmux"
+    stub.write_text(
+        '#!/bin/sh\n'
+        'if [ "$1" = "capture-pane" ]; then\n'
+        '    printf %s "$_HELIOY_TEST_TMUX_CAPTURE"\n'
+        '    exit 0\n'
+        'fi\n'
+        'exit 1\n'
+    )
+    stub.chmod(0o755)
+
+    capture_env = {
+        **os.environ,
+        "HELIOY_BUS_DIR": str(isolated_bus),
+        "TMUX_PANE": "%0",
+        "_HELIOY_TEST_TMUX_CAPTURE": "claude 4.7 opus | 4242 tokens · compact\n",
+        "PATH": f"{stub_dir}:{os.environ.get('PATH', '')}",
+    }
+    capture = subprocess.run(
+        ["bash", str(TOKEN_CAPTURE_HOOK)],
+        env=capture_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert capture.returncode == 0, capture.stderr
+
     set_sender(SMOKE_AGENT_ID)
     info = bm.whoami()
-    assert info["token_usage"] == usage
+    assert info["token_usage"]["tokens"] == 4242
+    assert info["token_usage"]["updated"].endswith("Z")
 
     # 6. Peer reads the message — unread surfaces, archive happens.
     msgs = bm.get_messages(agent_id=PEER_AGENT_ID)
