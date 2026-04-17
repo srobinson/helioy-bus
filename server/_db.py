@@ -62,7 +62,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
             tmux_window  TEXT NOT NULL,
             cwd          TEXT NOT NULL,
             created_at   TEXT NOT NULL,
-            status       TEXT NOT NULL DEFAULT 'active'
+            status       TEXT NOT NULL DEFAULT 'active',
+            layout       TEXT NOT NULL DEFAULT 'tiled'
         );
         CREATE TABLE IF NOT EXISTS warroom_members (
             warroom_id   TEXT NOT NULL REFERENCES warrooms(warroom_id) ON DELETE CASCADE,
@@ -86,6 +87,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
     # Migration: add token_usage column for token tracking
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE agents ADD COLUMN token_usage TEXT NOT NULL DEFAULT '{}'")
+    # Migration: add layout column so add/remove can preserve the configured layout
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE warrooms ADD COLUMN layout TEXT NOT NULL DEFAULT 'tiled'")
     _db_initialized = True
 
 

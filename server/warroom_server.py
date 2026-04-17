@@ -40,6 +40,19 @@ mcp = FastMCP("helioy-warroom")
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
+VALID_LAYOUTS = frozenset({
+    "tiled", "even-horizontal", "even-vertical", "main-horizontal", "main-vertical",
+})
+
+
+def _layout_error(layout: str) -> dict | None:
+    """Return an error dict if ``layout`` is not a supported tmux layout, else None."""
+    if layout not in VALID_LAYOUTS:
+        return {
+            "error": f"Invalid layout. Choose from: {', '.join(sorted(VALID_LAYOUTS))}"
+        }
+    return None
+
 
 def _kill_warrooms(
     conn: sqlite3.Connection, name: str, kill_all: bool
@@ -146,6 +159,10 @@ def warroom_spawn_repos(
     Returns:
         {warroom_id, tmux_window, members: [...], spawned_at}
     """
+    err = _layout_error(layout)
+    if err:
+        return err
+
     if not os.environ.get("TMUX"):
         return {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
 
@@ -187,9 +204,9 @@ def warroom_spawn_repos(
     with db() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO warrooms
-               (warroom_id, tmux_session, tmux_window, cwd, created_at, status)
-               VALUES (?, ?, ?, ?, ?, 'active')""",
-            (window, session, window, str(base), now),
+               (warroom_id, tmux_session, tmux_window, cwd, created_at, status, layout)
+               VALUES (?, ?, ?, ?, ?, 'active', ?)""",
+            (window, session, window, str(base), now, layout),
         )
         for m in members:
             agent_label = m["qualified_name"] or "general"
@@ -255,11 +272,9 @@ def warroom_spawn(
     if len(agents) > 8:
         return {"error": "Maximum 8 agents per warroom."}
 
-    valid_layouts = {
-        "tiled", "even-horizontal", "even-vertical", "main-horizontal", "main-vertical"
-    }
-    if layout not in valid_layouts:
-        return {"error": f"Invalid layout. Choose from: {', '.join(sorted(valid_layouts))}"}
+    err = _layout_error(layout)
+    if err:
+        return err
 
     # Check we're inside tmux
     tmux_env = os.environ.get("TMUX", "")
@@ -330,9 +345,9 @@ def warroom_spawn(
     with db() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO warrooms
-               (warroom_id, tmux_session, tmux_window, cwd, created_at, status)
-               VALUES (?, ?, ?, ?, ?, 'active')""",
-            (name, session, name, cwd, now),
+               (warroom_id, tmux_session, tmux_window, cwd, created_at, status, layout)
+               VALUES (?, ?, ?, ?, ?, 'active', ?)""",
+            (name, session, name, cwd, now, layout),
         )
         for m in members:
             conn.execute(
@@ -529,6 +544,7 @@ def warroom_add(
             return {"error": f"Agent type '{qn}' already in warroom '{name}'. Remove it first."}
 
         use_cwd = cwd or wr["cwd"]
+        stored_layout = wr["layout"] or "tiled"
 
         # Spawn pane outside the hot path but inside the connection lifetime
         try:
@@ -539,7 +555,7 @@ def warroom_add(
                 agent_type=agent_def["name"],
                 qualified_name=qn,
                 is_first=False,
-                layout="tiled",
+                layout=stored_layout,
             )
         except RuntimeError as e:
             return {"error": f"Spawn failed: {e}"}
@@ -618,16 +634,17 @@ def warroom_remove(
             )
             warroom_killed = True
         else:
-            # Reflow remaining panes
+            # Reflow remaining panes using the warroom's configured layout
             wr = conn.execute(
-                "SELECT tmux_session, tmux_window FROM warrooms WHERE warroom_id = ?",
+                "SELECT tmux_session, tmux_window, layout FROM warrooms WHERE warroom_id = ?",
                 (name,),
             ).fetchone()
             if wr:
+                stored_layout = wr["layout"] or "tiled"
                 with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
                     subprocess.run(
                         ["tmux", "select-layout", "-t",
-                         f"{wr['tmux_session']}:{wr['tmux_window']}", "tiled"],
+                         f"{wr['tmux_session']}:{wr['tmux_window']}", stored_layout],
                         capture_output=True, timeout=5,
                     )
 

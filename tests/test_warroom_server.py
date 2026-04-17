@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import time
 
-
 # ── Warroom: _parse_frontmatter ──────────────────────────────────────────────
 
 
@@ -434,9 +433,8 @@ def test_warroom_spawn_repos_includes_messaging_guidance(monkeypatch, tmp_path):
 
 def test_warroom_kill_removes_from_db(monkeypatch):
     """Kill removes warroom and members from the database."""
-    from server._db import _now, db
-
     import server.warroom_server as wm
+    from server._db import _now, db
 
     # Insert a warroom directly
     now = _now()
@@ -479,9 +477,8 @@ def test_warroom_kill_requires_name_or_all():
 
 def test_warroom_status_cross_references_agents(monkeypatch):
     """Status cross-references warroom members with registered agents."""
-    from server._db import _now, db
-
     import server.warroom_server as wm
+    from server._db import _now, db
 
     now = _now()
     with db() as conn:
@@ -523,9 +520,8 @@ def test_warroom_status_cross_references_agents(monkeypatch):
 
 def test_warroom_add_to_existing(fake_plugins, monkeypatch):
     """Add an agent to an existing warroom."""
-    from server._db import _now, db
-
     import server.warroom_server as wm
+    from server._db import _now, db
 
     now = _now()
     # Create warroom with one member
@@ -558,9 +554,8 @@ def test_warroom_add_to_existing(fake_plugins, monkeypatch):
 
 def test_warroom_add_duplicate_rejected(fake_plugins, monkeypatch):
     """Adding a duplicate agent type returns an error."""
-    from server._db import _now, db
-
     import server.warroom_server as wm
+    from server._db import _now, db
 
     now = _now()
     with db() as conn:
@@ -593,9 +588,8 @@ def test_warroom_add_nonexistent_warroom(fake_plugins):
 
 def test_warroom_add_unknown_agent_type(fake_plugins, monkeypatch):
     """Adding an unknown agent type returns error with suggestions."""
-    from server._db import _now, db
-
     import server.warroom_server as wm
+    from server._db import _now, db
 
     now = _now()
     with db() as conn:
@@ -616,9 +610,8 @@ def test_warroom_add_unknown_agent_type(fake_plugins, monkeypatch):
 
 def test_warroom_remove_agent(fake_plugins, monkeypatch):
     """Remove an agent from a warroom."""
-    from server._db import _now, db
-
     import server.warroom_server as wm
+    from server._db import _now, db
 
     now = _now()
     with db() as conn:
@@ -650,9 +643,8 @@ def test_warroom_remove_agent(fake_plugins, monkeypatch):
 
 def test_warroom_remove_last_agent_kills_warroom(fake_plugins, monkeypatch):
     """Removing the last agent marks warroom as killed."""
-    from server._db import _now, db
-
     import server.warroom_server as wm
+    from server._db import _now, db
 
     now = _now()
     with db() as conn:
@@ -681,9 +673,8 @@ def test_warroom_remove_last_agent_kills_warroom(fake_plugins, monkeypatch):
 
 def test_warroom_remove_nonexistent_agent(fake_plugins):
     """Removing an agent not in the warroom returns an error."""
-    from server._db import _now, db
-
     import server.warroom_server as wm
+    from server._db import _now, db
 
     now = _now()
     with db() as conn:
@@ -821,9 +812,8 @@ def test_spawn_pane_repo_mode_includes_skip_permissions(monkeypatch):
 
 def test_warroom_status_includes_token_usage(monkeypatch):
     """warroom_status includes token_usage in member dicts (simplified format)."""
-    from server._db import _now, db
-
     import server.warroom_server as wm
+    from server._db import _now, db
 
     now = _now()
     token_data = '{"tokens": 85000, "updated": "2026-03-17T08:17:51Z"}'
@@ -855,3 +845,252 @@ def test_warroom_status_includes_token_usage(monkeypatch):
     assert isinstance(member["token_usage"], dict)
     assert member["token_usage"]["tokens"] == 85000
     assert member["token_usage"]["updated"] == "2026-03-17T08:17:51Z"
+
+
+# ── Warroom: layout preservation (ALP-1810) ──────────────────────────────────
+
+
+def test_warroom_spawn_persists_layout(fake_plugins, monkeypatch):
+    """spawn records the configured layout on the warroom row."""
+    import server.warroom_server as wm
+    from server._db import db
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+    monkeypatch.setattr(wm, "_tmux_check", lambda *a: "main")
+    monkeypatch.setattr(wm, "_spawn_pane", lambda **kw: {
+        "agent_type": kw["agent_type"],
+        "qualified_name": kw["qualified_name"],
+        "tmux_target": "main:1.0",
+        "pane_id": "%10",
+    })
+
+    wm.warroom_spawn(
+        name="layout-wr",
+        agents=["backend-engineer"],
+        cwd="/tmp",
+        layout="main-horizontal",
+    )
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT layout FROM warrooms WHERE warroom_id = 'layout-wr'"
+        ).fetchone()
+        assert row["layout"] == "main-horizontal"
+
+
+def test_warroom_spawn_repos_validates_layout(monkeypatch, tmp_path):
+    """repo-mode spawn rejects invalid layout values like role-mode does."""
+    import server.warroom_server as wm
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+    # Create one fake repo so HELIOY_BASE scan succeeds
+    repo = tmp_path / "repo-a"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    monkeypatch.setenv("HELIOY_BASE", str(tmp_path))
+
+    result = wm.warroom_spawn_repos(window="repo-wr", layout="nonsense")
+    assert "error" in result
+    assert "layout" in result["error"].lower()
+
+
+def test_warroom_spawn_repos_persists_layout(monkeypatch, tmp_path):
+    """repo-mode spawn records the layout on the warroom row."""
+    import server.warroom_server as wm
+    from server._db import db
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+    monkeypatch.setattr(wm, "_tmux_check", lambda *a: "main")
+
+    repo = tmp_path / "repo-a"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    monkeypatch.setenv("HELIOY_BASE", str(tmp_path))
+
+    monkeypatch.setattr(wm, "_spawn_pane", lambda **kw: {
+        "agent_type": kw["agent_type"],
+        "qualified_name": kw.get("qualified_name"),
+        "tmux_target": "main:1.0",
+        "pane_id": "%0",
+    })
+
+    wm.warroom_spawn_repos(window="repo-layout", layout="even-vertical")
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT layout FROM warrooms WHERE warroom_id = 'repo-layout'"
+        ).fetchone()
+        assert row["layout"] == "even-vertical"
+
+
+def test_warroom_add_preserves_stored_layout(fake_plugins, monkeypatch):
+    """warroom_add passes the stored layout to _spawn_pane, not a hardcoded 'tiled'."""
+    import server.warroom_server as wm
+    from server._db import _now, db
+
+    now = _now()
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms "
+            "(warroom_id, tmux_session, tmux_window, cwd, created_at, status, layout) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("layout-add", "main", "layout-add", "/tmp", now, "active", "main-vertical"),
+        )
+        conn.execute(
+            "INSERT INTO warroom_members "
+            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("layout-add", "helioy-tools:backend-engineer", "main:1.0", "%10", now),
+        )
+
+    captured: dict = {}
+
+    def mock_spawn_pane(**kw):
+        captured.update(kw)
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": "main:1.1",
+            "pane_id": "%11",
+        }
+
+    monkeypatch.setattr(wm, "_spawn_pane", mock_spawn_pane)
+
+    result = wm.warroom_add(name="layout-add", agent="frontend-engineer")
+    assert "error" not in result
+    assert captured["layout"] == "main-vertical"
+
+
+def test_warroom_remove_preserves_stored_layout(fake_plugins, monkeypatch):
+    """warroom_remove reflows to the stored layout, not a hardcoded 'tiled'."""
+    import subprocess as _subprocess
+
+    import server.warroom_server as wm
+    from server._db import _now, db
+
+    now = _now()
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms "
+            "(warroom_id, tmux_session, tmux_window, cwd, created_at, status, layout) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("layout-rm", "main", "layout-rm", "/tmp", now, "active", "even-horizontal"),
+        )
+        conn.execute(
+            "INSERT INTO warroom_members "
+            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("layout-rm", "helioy-tools:backend-engineer", "main:1.0", "%10", now),
+        )
+        conn.execute(
+            "INSERT INTO warroom_members "
+            "(warroom_id, agent_type, tmux_target, pane_id, spawned_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("layout-rm", "helioy-tools:frontend-engineer", "main:1.1", "%11", now),
+        )
+
+    select_layout_calls: list[list[str]] = []
+    real_run = _subprocess.run
+
+    def mock_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and cmd[:2] == ["tmux", "select-layout"]:
+            select_layout_calls.append(cmd)
+            class _R:
+                returncode = 0
+                stdout = b""
+                stderr = b""
+            return _R()
+        # Swallow kill-pane so it doesn't spawn a real subprocess
+        if isinstance(cmd, list) and cmd[:2] == ["tmux", "kill-pane"]:
+            class _R:
+                returncode = 0
+                stdout = b""
+                stderr = b""
+            return _R()
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(_subprocess, "run", mock_run)
+
+    result = wm.warroom_remove(name="layout-rm", agent="frontend-engineer")
+    assert result["warroom_killed"] is False
+    assert result["remaining_members"] == 1
+
+    assert select_layout_calls, "warroom_remove should reflow layout when members remain"
+    # Last arg to select-layout is the layout name
+    assert select_layout_calls[-1][-1] == "even-horizontal"
+
+
+def test_warroom_layout_preserved_across_add_and_remove(fake_plugins, monkeypatch):
+    """End-to-end: spawn with non-default layout, add, remove — layout is preserved."""
+    import subprocess as _subprocess
+
+    import server.warroom_server as wm
+    from server._db import db
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+    monkeypatch.setattr(wm, "_tmux_check", lambda *a: "main")
+
+    pane_counter = [0]
+
+    def mock_spawn_pane(**kw):
+        idx = pane_counter[0]
+        pane_counter[0] += 1
+        mock_spawn_pane.last_layout = kw["layout"]
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": f"main:1.{idx}",
+            "pane_id": f"%{idx}",
+        }
+
+    mock_spawn_pane.last_layout = None  # type: ignore[attr-defined]
+    monkeypatch.setattr(wm, "_spawn_pane", mock_spawn_pane)
+
+    spawn_result = wm.warroom_spawn(
+        name="flow",
+        agents=["backend-engineer", "frontend-engineer"],
+        cwd="/tmp",
+        layout="main-vertical",
+    )
+    assert "error" not in spawn_result
+    assert mock_spawn_pane.last_layout == "main-vertical"  # type: ignore[attr-defined]
+
+    # Add another agent — _spawn_pane should see the stored layout
+    add_result = wm.warroom_add(name="flow", agent="code-reviewer")
+    assert "error" not in add_result
+    assert mock_spawn_pane.last_layout == "main-vertical"  # type: ignore[attr-defined]
+
+    # Remove an agent — reflow should use the stored layout
+    select_layout_calls: list[list[str]] = []
+    real_run = _subprocess.run
+
+    def mock_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and cmd[:2] == ["tmux", "select-layout"]:
+            select_layout_calls.append(cmd)
+            class _R:
+                returncode = 0
+                stdout = b""
+                stderr = b""
+            return _R()
+        if isinstance(cmd, list) and cmd[:2] == ["tmux", "kill-pane"]:
+            class _R:
+                returncode = 0
+                stdout = b""
+                stderr = b""
+            return _R()
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(_subprocess, "run", mock_run)
+
+    rm_result = wm.warroom_remove(name="flow", agent="frontend-engineer")
+    assert rm_result["warroom_killed"] is False
+    assert select_layout_calls[-1][-1] == "main-vertical"
+
+    # Sanity: layout column still reads back unchanged
+    with db() as conn:
+        row = conn.execute(
+            "SELECT layout FROM warrooms WHERE warroom_id = 'flow'"
+        ).fetchone()
+        assert row["layout"] == "main-vertical"
