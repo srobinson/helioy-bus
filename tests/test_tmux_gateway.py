@@ -174,7 +174,7 @@ def test_nudge_sends_cancel_before_text_when_pane_in_copy_mode():
         (b"1\n", 0),   # display-message pane_in_mode -> "1"
         (b"", 0),      # send-keys -X cancel
         (b"", 0),      # send-keys -l "you have mail!"
-        (b"", 0),      # send-keys Enter
+        (b"", 0),      # send-keys -H 0d (carriage return)
     ]
     with patch(
         "server._tmux.subprocess.run", side_effect=_scripted_run(responses)
@@ -185,23 +185,35 @@ def test_nudge_sends_cancel_before_text_when_pane_in_copy_mode():
     assert calls[0][1] == "display-message"
     assert calls[1][1:] == ["send-keys", "-t", "main:1.0", "-X", "cancel"]
     assert calls[2][1:] == ["send-keys", "-t", "main:1.0", "-l", "you have mail!"]
-    assert calls[3][1:] == ["send-keys", "-t", "main:1.0", "Enter"]
+    assert calls[3][1:] == ["send-keys", "-t", "main:1.0", "-H", "0d"]
 
 
-def test_nudge_suppresses_codex_runtime_without_tmux_text():
+def test_nudge_submits_via_hex_carriage_return_for_codex_runtime():
+    """Codex's TUI silent-fails on send-keys Enter, so the submit uses
+    hex 0d. The runtime arg is accepted but does not gate the nudge;
+    one path services every runtime."""
     gw = TmuxGateway()
-    with patch("server._tmux.subprocess.run") as mock_run:
-        assert gw.nudge("main:1.0", runtime="codex") is False
-    mock_run.assert_not_called()
+    responses = [
+        (b"0\n", 0),   # mode check: not in copy-mode
+        (b"", 0),      # send-keys -l
+        (b"", 0),      # send-keys -H 0d
+    ]
+    with patch(
+        "server._tmux.subprocess.run", side_effect=_scripted_run(responses)
+    ) as mock_run:
+        assert gw.nudge("main:1.0", runtime="codex") is True
+
+    calls = [call.args[0] for call in mock_run.call_args_list]
+    assert calls[-1][1:] == ["send-keys", "-t", "main:1.0", "-H", "0d"]
 
 
 def test_nudge_skips_cancel_when_pane_not_in_copy_mode():
-    """When pane_in_mode != '1', nudge goes straight to text + Enter."""
+    """When pane_in_mode != '1', nudge goes straight to text + submit."""
     gw = TmuxGateway()
     responses = [
         (b"0\n", 0),   # not in copy-mode
         (b"", 0),      # send-keys -l
-        (b"", 0),      # send-keys Enter
+        (b"", 0),      # send-keys -H 0d
     ]
     with patch(
         "server._tmux.subprocess.run", side_effect=_scripted_run(responses)
@@ -229,12 +241,12 @@ def test_nudge_returns_false_when_text_send_fails():
         assert gw.nudge("main:1.0") is False
 
 
-def test_nudge_returns_false_when_enter_fails():
+def test_nudge_returns_false_when_submit_fails():
     gw = TmuxGateway()
     responses = [
         (b"0\n", 0),   # mode check ok
         (b"", 0),      # text send ok
-        (b"", 1),      # Enter fails
+        (b"", 1),      # -H 0d submit fails
     ]
     with patch("server._tmux.subprocess.run", side_effect=_scripted_run(responses)):
         assert gw.nudge("main:1.0") is False

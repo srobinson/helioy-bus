@@ -156,21 +156,25 @@ def test_send_message_nudges_live_pane(set_sender):
     assert result["nudged"] is True
 
 
-def test_send_message_skips_codex_nudge(set_sender, monkeypatch):
+def test_send_message_nudges_codex_recipient(set_sender, monkeypatch):
+    """Codex panes honor tmux send-keys when the submit uses hex 0d,
+    so codex recipients receive the same nudge path as claude. The
+    historical skip was a workaround for the Enter-key silent-fail
+    that the _tmux gateway now avoids."""
     import server.bus_server as bm
 
     monkeypatch.setenv("HELIOY_RUNTIME", "codex")
     bm.register_agent(pwd="/tmp/codex", tmux_target="main:0.0", agent_id="codex")
     set_sender("sender")
     with (
-        patch.object(gateway, "pane_alive") as mock_alive,
-        patch.object(gateway, "nudge") as mock_nudge,
+        patch.object(gateway, "pane_alive", return_value=True) as mock_alive,
+        patch.object(gateway, "nudge", return_value=True) as mock_nudge,
     ):
         result = bm.send_message(to="codex", content="ping")
     assert result["delivered"] is True
-    assert result["nudged"] is False
-    mock_alive.assert_not_called()
-    mock_nudge.assert_not_called()
+    assert result["nudged"] is True
+    mock_alive.assert_called_once_with("main:0.0")
+    mock_nudge.assert_called_once_with("main:0.0", runtime="codex")
 
 
 def test_send_message_skips_nudge_for_migrated_unknown_runtime(set_sender, monkeypatch):

@@ -21,6 +21,12 @@ from server._tmux import gateway
 
 NUDGE_THROTTLE_SECONDS = 30
 
+# Runtimes whose TUI honors a tmux send-keys nudge. Unknown-runtime rows
+# predate multi-runtime bookkeeping and are not safe to nudge. Any new
+# runtime must be validated (hex-0d submit + literal text) before being
+# added here.
+_NUDGEABLE_RUNTIMES = frozenset({"claude", "codex"})
+
 
 # ── Nudge throttling (data-layer policy, not tmux concern) ───────────────────
 
@@ -179,7 +185,7 @@ def send(
         if (
             nudge
             and tmux_target
-            and runtime == "claude"
+            and runtime in _NUDGEABLE_RUNTIMES
             and _nudge_allowed(target_id)
             and gateway.pane_alive(tmux_target)
             and gateway.nudge(tmux_target, runtime=runtime)
