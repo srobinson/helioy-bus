@@ -219,7 +219,7 @@ def spawn_repos(
                 layout=layout,
                 runtime=runtime_id,
             )
-            pane_info["repo"] = repo_path.name
+            pane_info["desired_repo"] = repo_path.name
             members.append(pane_info)
         except RuntimeError as e:
             spawn_errors.append({"repo": repo_path.name, "error": str(e)})
@@ -227,23 +227,26 @@ def spawn_repos(
     with _db.db() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO warrooms
-               (warroom_id, tmux_session, tmux_window, cwd, created_at, status)
-               VALUES (?, ?, ?, ?, ?, 'active')""",
-            (window, session, window, str(base), now),
+               (warroom_id, tmux_session, tmux_window, cwd, layout,
+                runtime_policy, metadata, created_at, status)
+               VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 'active')""",
+            (window, session, window, str(base), layout, now),
         )
         for order, m in enumerate(members):
             role = m["qualified_name"] or m["agent_type"] or "general"
             member_id = _db._new_member_id()
             conn.execute(
                 """INSERT INTO warroom_members
-                   (warroom_member_id, warroom_id, runtime, role, repo,
-                    spawn_order, tmux_target, pane_id, agent_id, spawned_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
-                (member_id, window, runtime_id, role, m["repo"], order,
-                 m["tmux_target"], m["pane_id"], now),
+                   (warroom_member_id, warroom_id, desired_runtime, desired_role,
+                    desired_repo, state, agent_instance_id, spawn_order,
+                    tmux_target, pane_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, ?, ?)""",
+                (member_id, window, runtime_id, role, m["desired_repo"], order,
+                 m["tmux_target"], m["pane_id"], now, now),
             )
             m["warroom_member_id"] = member_id
-            m["role"] = role
+            m["desired_role"] = role
+            m["desired_runtime"] = runtime_id
             m["spawn_order"] = order
 
     result: dict = {
@@ -343,22 +346,26 @@ def spawn(
     with _db.db() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO warrooms
-               (warroom_id, tmux_session, tmux_window, cwd, created_at, status)
-               VALUES (?, ?, ?, ?, ?, 'active')""",
-            (name, session, name, cwd, now),
+               (warroom_id, tmux_session, tmux_window, cwd, layout,
+                runtime_policy, metadata, created_at, status)
+               VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 'active')""",
+            (name, session, name, cwd, layout, now),
         )
         for order, m in enumerate(members):
             member_id = _db._new_member_id()
             conn.execute(
                 """INSERT INTO warroom_members
-                   (warroom_member_id, warroom_id, runtime, role, repo,
-                    spawn_order, tmux_target, pane_id, agent_id, spawned_at)
-                   VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)""",
+                   (warroom_member_id, warroom_id, desired_runtime, desired_role,
+                    desired_repo, state, agent_instance_id, spawn_order,
+                    tmux_target, pane_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, NULL, 'pending', NULL, ?, ?, ?, ?, ?)""",
                 (member_id, name, runtime_id, m["qualified_name"], order,
-                 m["tmux_target"], m["pane_id"], now),
+                 m["tmux_target"], m["pane_id"], now, now),
             )
             m["warroom_member_id"] = member_id
-            m["role"] = m["qualified_name"]
+            m["desired_role"] = m["qualified_name"]
+            m["desired_runtime"] = runtime_id
+            m["spawn_order"] = order
 
     member_types = [m["qualified_name"] or m["agent_type"] for m in members]
 
@@ -426,7 +433,9 @@ def status(*, name: str = "") -> list[dict]:
                 pane_alive = gateway.pane_alive(tmux_target)
 
                 registered = m["registered_agent_id"] is not None
-                agent_id = m["registered_agent_id"] if registered else m["agent_id"]
+                agent_instance_id = (
+                    m["registered_agent_id"] if registered else m["agent_instance_id"]
+                )
                 token_usage_raw = m["agent_token_usage"] if registered else None
                 token_usage: dict | str | None = token_usage_raw
                 if token_usage_raw:
@@ -435,17 +444,19 @@ def status(*, name: str = "") -> list[dict]:
 
                 members.append({
                     "warroom_member_id": m["warroom_member_id"],
-                    "runtime": m["runtime"],
-                    "role": m["role"],
-                    "repo": m["repo"],
+                    "desired_runtime": m["desired_runtime"],
+                    "desired_role": m["desired_role"],
+                    "desired_repo": m["desired_repo"],
+                    "state": m["state"],
+                    "agent_instance_id": agent_instance_id,
                     "spawn_order": m["spawn_order"],
-                    "agent_type": m["role"],  # legacy alias
+                    "agent_type": m["desired_role"],
                     "tmux_target": tmux_target,
                     "pane_id": m["pane_id"],
-                    "agent_id": agent_id,
                     "registered": registered,
                     "pane_alive": pane_alive,
-                    "spawned_at": m["spawned_at"],
+                    "created_at": m["created_at"],
+                    "updated_at": m["updated_at"],
                     "token_usage": token_usage,
                 })
 
@@ -454,6 +465,9 @@ def status(*, name: str = "") -> list[dict]:
                 "tmux_session": wr["tmux_session"],
                 "tmux_window": wr["tmux_window"],
                 "cwd": wr["cwd"],
+                "layout": wr["layout"],
+                "runtime_policy": wr["runtime_policy"],
+                "metadata": wr["metadata"],
                 "status": wr["status"],
                 "created_at": wr["created_at"],
                 "members": members,
@@ -515,18 +529,20 @@ def add(*, name: str, agent: str, cwd: str = "", runtime: str = "") -> dict:
         member_id = _db._new_member_id()
         conn.execute(
             """INSERT INTO warroom_members
-               (warroom_member_id, warroom_id, runtime, role, repo,
-                spawn_order, tmux_target, pane_id, agent_id, spawned_at)
-               VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)""",
+               (warroom_member_id, warroom_id, desired_runtime, desired_role,
+                desired_repo, state, agent_instance_id, spawn_order,
+                tmux_target, pane_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, NULL, 'pending', NULL, ?, ?, ?, ?, ?)""",
             (member_id, name, runtime_id, qn, next_order,
-             pane_info["tmux_target"], pane_info["pane_id"], now),
+             pane_info["tmux_target"], pane_info["pane_id"], now, now),
         )
         count = conn.execute(
             "SELECT COUNT(*) FROM warroom_members WHERE warroom_id = ?", (name,)
         ).fetchone()[0]
 
     pane_info["warroom_member_id"] = member_id
-    pane_info["role"] = qn
+    pane_info["desired_role"] = qn
+    pane_info["desired_runtime"] = runtime_id
     pane_info["spawn_order"] = next_order
     return {
         "warroom_id": name,
@@ -552,7 +568,8 @@ def remove(*, name: str, agent: str = "", member_id: str = "") -> dict:
             agent_def = _resolve_agent_type(agent)
             qn = agent_def["qualified_name"] if agent_def else agent
             matches = conn.execute(
-                "SELECT * FROM warroom_members WHERE warroom_id = ? AND role = ? "
+                "SELECT * FROM warroom_members "
+                "WHERE warroom_id = ? AND desired_role = ? "
                 "ORDER BY spawn_order",
                 (name, qn),
             ).fetchall()
@@ -565,7 +582,7 @@ def remove(*, name: str, agent: str = "", member_id: str = "") -> dict:
                         {
                             "warroom_member_id": m["warroom_member_id"],
                             "tmux_target": m["tmux_target"],
-                            "repo": m["repo"],
+                            "desired_repo": m["desired_repo"],
                         }
                         for m in matches
                     ],
@@ -602,7 +619,7 @@ def remove(*, name: str, agent: str = "", member_id: str = "") -> dict:
         "warroom_id": name,
         "removed": {
             "warroom_member_id": member["warroom_member_id"],
-            "role": member["role"],
+            "desired_role": member["desired_role"],
         },
         "remaining_members": remaining,
         "warroom_killed": warroom_killed,

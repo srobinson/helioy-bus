@@ -160,24 +160,37 @@ CREATE TABLE nudge_log (
 );
 
 CREATE TABLE warrooms (
-    warroom_id   TEXT PRIMARY KEY,
-    tmux_session TEXT NOT NULL,
-    tmux_window  TEXT NOT NULL,
-    cwd          TEXT NOT NULL,
-    created_at   TEXT NOT NULL,
-    status       TEXT NOT NULL DEFAULT 'active'
+    warroom_id     TEXT PRIMARY KEY,
+    tmux_session   TEXT NOT NULL,
+    tmux_window    TEXT NOT NULL,
+    cwd            TEXT NOT NULL,
+    layout         TEXT NOT NULL DEFAULT 'tiled',
+    runtime_policy TEXT,
+    metadata       TEXT,
+    created_at     TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'active'
 );
 
 CREATE TABLE warroom_members (
-    warroom_id   TEXT NOT NULL REFERENCES warrooms(warroom_id) ON DELETE CASCADE,
-    agent_type   TEXT NOT NULL,
-    tmux_target  TEXT NOT NULL,
-    pane_id      TEXT NOT NULL,
-    agent_id     TEXT,
-    spawned_at   TEXT NOT NULL,
-    PRIMARY KEY (warroom_id, agent_type)
+    warroom_member_id TEXT PRIMARY KEY,
+    warroom_id        TEXT NOT NULL REFERENCES warrooms(warroom_id) ON DELETE CASCADE,
+    desired_runtime   TEXT NOT NULL,
+    desired_role      TEXT NOT NULL,
+    desired_repo      TEXT,
+    state             TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'active'
+    agent_instance_id TEXT,                             -- FK to agents.agent_id once reconciled
+    spawn_order       INTEGER NOT NULL,
+    tmux_target       TEXT NOT NULL,
+    pane_id           TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
 );
 ```
+
+The `desired_*` columns record the orchestrator's intent at spawn time.
+The reconciler (`services/reconciliation.backfill_warroom_member_agent_ids`)
+joins members to `agents` on `tmux_target` and writes `agent_instance_id`
+back, advancing `state` from `pending` to `active`.
 
 ## Message Format
 

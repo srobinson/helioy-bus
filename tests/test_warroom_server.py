@@ -281,10 +281,10 @@ def test_warroom_members_runtime_is_required():
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
                 "INSERT INTO warroom_members "
-                "(warroom_member_id, warroom_id, role, spawn_order, "
-                " tmux_target, pane_id, spawned_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (_new_member_id(), "t", "general", 0, "s:1.0", "%1", now),
+                "(warroom_member_id, warroom_id, desired_role, spawn_order, "
+                " tmux_target, pane_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (_new_member_id(), "t", "general", 0, "s:1.0", "%1", now, now),
             )
 
 
@@ -464,18 +464,20 @@ def test_warroom_spawn_repos_includes_messaging_guidance(monkeypatch, tmp_path):
 
 
 def _insert_member(conn, *, warroom_id, role, tmux_target, pane_id, now,
-                   member_id=None, spawn_order=0, repo=None, runtime="claude"):
-    """Test helper: insert a warroom_members row using the new schema."""
+                   member_id=None, spawn_order=0, repo=None, runtime="claude",
+                   state="pending", agent_instance_id=None):
+    """Test helper: insert a warroom_members row using the canonical schema."""
     from server._db import _new_member_id
 
     member_id = member_id or _new_member_id()
     conn.execute(
         "INSERT INTO warroom_members "
-        "(warroom_member_id, warroom_id, runtime, role, repo, spawn_order, "
-        " tmux_target, pane_id, spawned_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (member_id, warroom_id, runtime, role, repo, spawn_order,
-         tmux_target, pane_id, now),
+        "(warroom_member_id, warroom_id, desired_runtime, desired_role, "
+        " desired_repo, state, agent_instance_id, spawn_order, "
+        " tmux_target, pane_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (member_id, warroom_id, runtime, role, repo, state,
+         agent_instance_id, spawn_order, tmux_target, pane_id, now, now),
     )
     return member_id
 
@@ -558,11 +560,14 @@ def test_warroom_status_cross_references_agents(monkeypatch):
     member = wr["members"][0]
     assert member["registered"] is True
     assert member["pane_alive"] is True
-    assert member["agent_id"] == "project:helioy-tools:backend-engineer:main:2.0"
+    assert member["agent_instance_id"] == "project:helioy-tools:backend-engineer:main:2.0"
     assert member["warroom_member_id"] == member_id
-    assert member["role"] == "helioy-tools:backend-engineer"
-    assert member["runtime"] == "claude"
-    assert member["repo"] is None
+    assert member["desired_role"] == "helioy-tools:backend-engineer"
+    assert member["desired_runtime"] == "claude"
+    assert member["desired_repo"] is None
+    # Reconciler runs before status and promotes pending→active when the
+    # inserted agent row matches the member's tmux_target.
+    assert member["state"] == "active"
     assert member["spawn_order"] == 0
 
 
@@ -599,7 +604,7 @@ def test_warroom_add_to_existing(fake_plugins, monkeypatch):
     result = wm.warroom_add(name="add-test", agent="frontend-engineer")
     assert result["warroom_id"] == "add-test"
     assert result["added"]["qualified_name"] == "helioy-tools:frontend-engineer"
-    assert result["added"]["role"] == "helioy-tools:frontend-engineer"
+    assert result["added"]["desired_role"] == "helioy-tools:frontend-engineer"
     assert "warroom_member_id" in result["added"]
     assert result["added"]["spawn_order"] == 1
     assert result["member_count"] == 2
@@ -646,11 +651,12 @@ def test_warroom_add_allows_duplicate_role(fake_plugins, monkeypatch):
 
     with db() as conn:
         roles = conn.execute(
-            "SELECT role, spawn_order FROM warroom_members WHERE warroom_id = ? ORDER BY spawn_order",
+            "SELECT desired_role, spawn_order FROM warroom_members "
+            "WHERE warroom_id = ? ORDER BY spawn_order",
             ("dup-test",),
         ).fetchall()
         assert len(roles) == 2
-        assert roles[0]["role"] == roles[1]["role"]
+        assert roles[0]["desired_role"] == roles[1]["desired_role"]
         assert roles[0]["spawn_order"] == 0
         assert roles[1]["spawn_order"] == 1
 
@@ -712,7 +718,7 @@ def test_warroom_remove_agent(fake_plugins, monkeypatch):
 
     result = wm.warroom_remove(name="rm-test", agent="backend-engineer")
     assert result["warroom_id"] == "rm-test"
-    assert result["removed"]["role"] == "helioy-tools:backend-engineer"
+    assert result["removed"]["desired_role"] == "helioy-tools:backend-engineer"
     assert result["removed"]["warroom_member_id"] == be_id
     assert result["remaining_members"] == 1
     assert result["warroom_killed"] is False
@@ -877,7 +883,7 @@ def test_warroom_spawn_idempotent_replaces_existing(fake_plugins, monkeypatch):
             "SELECT * FROM warroom_members WHERE warroom_id = 'idem-test'"
         ).fetchall()
         assert len(members) == 1
-        assert members[0]["role"] == "helioy-tools:frontend-engineer"
+        assert members[0]["desired_role"] == "helioy-tools:frontend-engineer"
 
 
 # ── Warroom: spawn pane command line ─────────────────────────────────────────
@@ -1022,20 +1028,20 @@ def test_warroom_spawn_repos_creates_distinct_members_per_repo(monkeypatch, tmp_
     result = wm.warroom_spawn_repos(window="repo-wr")
     assert "errors" not in result
     assert len(result["members"]) == 3
-    repos = [m["repo"] for m in result["members"]]
+    repos = [m["desired_repo"] for m in result["members"]]
     assert sorted(repos) == ["repo-a", "repo-b", "repo-c"]
     member_ids = {m["warroom_member_id"] for m in result["members"]}
     assert len(member_ids) == 3
 
     with db() as conn:
         rows = conn.execute(
-            "SELECT warroom_member_id, role, repo, spawn_order FROM warroom_members "
-            "WHERE warroom_id = ? ORDER BY spawn_order",
+            "SELECT warroom_member_id, desired_role, desired_repo, spawn_order "
+            "FROM warroom_members WHERE warroom_id = ? ORDER BY spawn_order",
             ("repo-wr",),
         ).fetchall()
         assert len(rows) == 3
-        assert all(r["role"] == "general" for r in rows)
-        assert [r["repo"] for r in rows] == ["repo-a", "repo-b", "repo-c"]
+        assert all(r["desired_role"] == "general" for r in rows)
+        assert [r["desired_repo"] for r in rows] == ["repo-a", "repo-b", "repo-c"]
         assert [r["spawn_order"] for r in rows] == [0, 1, 2]
         assert len({r["warroom_member_id"] for r in rows}) == 3
 
@@ -1095,24 +1101,31 @@ def test_warroom_members_legacy_schema_migrates():
     with db() as conn:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(warroom_members)").fetchall()}
         assert "warroom_member_id" in cols
-        assert "role" in cols
-        assert "repo" in cols
+        assert "desired_role" in cols
+        assert "desired_repo" in cols
         assert "spawn_order" in cols
-        assert "runtime" in cols
+        assert "desired_runtime" in cols
+        assert "state" in cols
+        assert "agent_instance_id" in cols
+        assert "created_at" in cols
+        assert "updated_at" in cols
 
         rows = conn.execute(
             "SELECT * FROM warroom_members WHERE warroom_id = 'legacy' ORDER BY spawn_order"
         ).fetchall()
         assert len(rows) == 2
-        assert {r["role"] for r in rows} == {
+        assert {r["desired_role"] for r in rows} == {
             "helioy-tools:backend-engineer",
             "helioy-tools:frontend-engineer",
         }
-        assert all(r["runtime"] == "claude" for r in rows)
-        assert all(r["repo"] is None for r in rows)
+        assert all(r["desired_runtime"] == "claude" for r in rows)
+        assert all(r["desired_repo"] is None for r in rows)
+        # NULL agent_id in the legacy row maps to state='pending'.
+        assert all(r["state"] == "pending" for r in rows)
+        assert all(r["agent_instance_id"] is None for r in rows)
         assert sorted(r["spawn_order"] for r in rows) == [0, 1]
         assert len({r["warroom_member_id"] for r in rows}) == 2
-        # legacy_old table is gone
+        # legacy temp table is gone
         legacy = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='warroom_members_legacy'"
         ).fetchone()

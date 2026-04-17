@@ -71,16 +71,18 @@ def prune_archived_messages(agent_id: str, *, max_age_days: int = 7) -> int:
 
 
 def backfill_warroom_member_agent_ids(warroom_id: str = "") -> int:
-    """Fill in `warroom_members.agent_id` from the agents table.
+    """Fill in `warroom_members.agent_instance_id` from the agents table.
 
     Members spawn before their runtime process registers on the bus, so
-    `agent_id` lands NULL initially. Once a registration arrives whose
-    `tmux_target` matches a member, this writes the agent_id back into
-    the member row.
+    `agent_instance_id` lands NULL initially with `state='pending'`.
+    Once a registration arrives whose `tmux_target` matches a member,
+    this writes the agent_instance_id into the member row and advances
+    state to `active`, bumping `updated_at`.
 
     `warroom_id` filters to one warroom; empty backfills every active
     member. Returns the count updated.
     """
+    now = _db._now()
     with _db.db() as conn:
         if warroom_id:
             rows = conn.execute(
@@ -88,7 +90,7 @@ def backfill_warroom_member_agent_ids(warroom_id: str = "") -> int:
                 SELECT m.warroom_member_id, a.agent_id
                 FROM warroom_members m
                 JOIN agents a ON a.tmux_target = m.tmux_target
-                WHERE m.warroom_id = ? AND m.agent_id IS NULL
+                WHERE m.warroom_id = ? AND m.agent_instance_id IS NULL
                 """,
                 (warroom_id,),
             ).fetchall()
@@ -98,12 +100,14 @@ def backfill_warroom_member_agent_ids(warroom_id: str = "") -> int:
                 SELECT m.warroom_member_id, a.agent_id
                 FROM warroom_members m
                 JOIN agents a ON a.tmux_target = m.tmux_target
-                WHERE m.agent_id IS NULL
+                WHERE m.agent_instance_id IS NULL
                 """
             ).fetchall()
         for r in rows:
             conn.execute(
-                "UPDATE warroom_members SET agent_id = ? WHERE warroom_member_id = ?",
-                (r["agent_id"], r["warroom_member_id"]),
+                "UPDATE warroom_members "
+                "SET agent_instance_id = ?, state = 'active', updated_at = ? "
+                "WHERE warroom_member_id = ?",
+                (r["agent_id"], now, r["warroom_member_id"]),
             )
     return len(rows)

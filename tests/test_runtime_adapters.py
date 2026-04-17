@@ -232,9 +232,9 @@ def test_warroom_spawn_records_runtime_from_adapter(monkeypatch):
 
     with _db_mod.db() as conn:
         runtimes = [
-            row["runtime"]
+            row["desired_runtime"]
             for row in conn.execute(
-                "SELECT runtime FROM warroom_members WHERE warroom_id = ?",
+                "SELECT desired_runtime FROM warroom_members WHERE warroom_id = ?",
                 ("wr",),
             )
         ]
@@ -402,9 +402,9 @@ def test_warroom_spawn_repos_persists_requested_codex_runtime(monkeypatch, tmp_p
 
     with _db_mod.db() as conn:
         runtimes = [
-            row["runtime"]
+            row["desired_runtime"]
             for row in conn.execute(
-                "SELECT runtime FROM warroom_members WHERE warroom_id = ?",
+                "SELECT desired_runtime FROM warroom_members WHERE warroom_id = ?",
                 ("repo-wr",),
             )
         ]
@@ -582,9 +582,9 @@ def test_warroom_add_rejects_codex_specialist_with_helpful_error(monkeypatch):
     # DB must still reflect only the original Claude member.
     with _db_mod.db() as conn:
         runtimes = [
-            row["runtime"]
+            row["desired_runtime"]
             for row in conn.execute(
-                "SELECT runtime FROM warroom_members WHERE warroom_id = ?",
+                "SELECT desired_runtime FROM warroom_members WHERE warroom_id = ?",
                 ("mix",),
             )
         ]
