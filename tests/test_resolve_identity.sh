@@ -81,6 +81,10 @@ mkdir -p /tmp/helioy-test-myproject
 mkdir -p /tmp/helioy-test-myrepo
 
 # ── Test 1: No tmux, no CLAUDE_PROJECT_DIR -- canonical 2-segment fallback ------
+# Also the regression test for the empty-exports path: `run_resolve` is called
+# with only WORKDIR, so the internal `exports` array is empty. Under bash 3.2
+# with `set -u`, expanding `"${exports[@]}"` used to abort with "unbound
+# variable". The guard added by ALP-1793 is exercised here on every run.
 echo ""
 echo "--- Fallback: no tmux, no CLAUDE_PROJECT_DIR ---"
 

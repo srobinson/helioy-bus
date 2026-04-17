@@ -34,14 +34,25 @@ Each Claude Code instance spawns its own helioy-bus process (and optionally a he
 
 ```
 server/
-  bus_server.py        # Bus MCP server: 7 tools (registry, messaging, identity)
-  warroom_server.py    # Warroom MCP server: 9 tools (spawn, status, presets)
+  bus_server.py        # Bus MCP server: registry, messaging, identity tools
+  warroom_server.py    # Warroom MCP server: spawn, status, presets tools
   warroom_cli.py       # CLI entry point for warroom operations
-  proxy.py             # Hot-reload dev proxy: watches server/ for changes, restarts transparently
-  _db.py               # Shared database layer, path constants, logging
-  _tmux.py             # Tmux operations: nudging, pane spawning, liveness checks
-  _warroom.py          # Warroom helpers: frontmatter parsing, agent type scanning
+  proxy.py             # Hot-reload dev proxy: watches server/, restarts transparently
+  _db.py               # Shared database layer, path constants, schema migration
+  _tmux.py             # TmuxGateway: nudging, pane spawning, liveness checks
+  _warroom.py          # Runtime-aware agent type discovery and short-name resolution
+  _warroom_persist.py  # Shared warroom persistence and tmux preflight helpers
   _identity.py         # Agent identity resolution (PID files, shell resolver, fallback)
+  runtimes/
+    base.py            # RuntimeAdapter protocol
+    claude.py          # Claude Code runtime adapter
+    codex.py           # Codex runtime adapter
+    _frontmatter.py    # Shared agent type frontmatter parser
+  services/
+    agent_registry.py  # Registration, identity, listing, heartbeat
+    message.py         # Send, receive, nudge, throttle
+    warroom.py         # Warroom lifecycle: spawn, kill, add, remove, presets, status
+    reconciliation.py  # Member agent_id backfill (join warroom_members to agents)
 
 plugin/
   hooks/
@@ -50,16 +61,29 @@ plugin/
     bus-prune.sh         # Prunes stale agents from registry
     check-mail.sh        # PreToolUse: notifies agent of unread messages
     stop-check-mail.sh   # Stop: halts mail checking
-    token-capture.sh     # Captures token usage metrics
+    token-capture.sh     # PreToolUse: captures token usage from tmux status line
     lib/
       resolve-identity.sh  # Authoritative identity resolver (shared by hooks)
   scripts/
     warroom.sh           # Legacy tmux layout spawner (repo-mode and role-mode)
 
 tests/
-  test_bus_server.py      # 40 test functions covering all bus tools
-  test_warroom_server.py  # 39 test functions covering warroom operations
-  conftest.py             # Shared fixtures
+  conftest.py                         # Shared fixtures
+  test_adapter_lifecycle.py           # Runtime adapter lifecycle contract
+  test_bus_identity.py                # Identity resolution paths
+  test_bus_lifecycle_and_db.py        # Init, migration, registration lifecycle
+  test_bus_mailbox.py                 # Inbox delivery, archive, TTL
+  test_bus_registry.py                # Agent registry operations
+  test_runtime_adapters.py            # Runtime adapter protocol conformance
+  test_runtime_discovery.py           # Runtime-aware agent type discovery
+  test_schema_migration.py            # Legacy warroom_members shim
+  test_shell_hooks.py                 # Shell hook contract (register, mail, token)
+  test_smoke.py                       # End-to-end smoke coverage
+  test_tmux_gateway.py                # TmuxGateway behavior
+  test_warroom_agent_types.py         # Agent type resolution
+  test_warroom_discover_presets.py    # Discovery and preset operations
+  test_warroom_members.py             # Warroom membership operations
+  test_warroom_spawn.py               # Warroom spawn paths
 ```
 
 ## MCP Tools: Bus Server
@@ -104,7 +128,7 @@ Reads all unread messages from an agent's inbox, moving them to `archive/` on re
 
 ### warroom_discover
 
-Searches available agent types by scanning the Claude Code plugin cache for agent definitions. Filters by query substring and/or plugin namespace.
+Searches available agent types across registered runtime adapters. Each runtime defines its own on-disk catalogue layout via ``discover_agent_types()``; empty ``runtime`` returns the union across every registered runtime. Filters by query substring and/or namespace.
 
 ### warroom_spawn_repos
 
@@ -232,11 +256,26 @@ helioy-bus-initdb    = "server._db:_initdb_cli"
 ## Development
 
 ```bash
-uv sync                    # install dependencies
-uv run pytest              # run tests (79 test functions)
-uv run ruff check .        # lint
-uv run mypy server/        # type check
+just check                 # ruff + mypy
+just build                 # uv sync
+just test                  # pytest
 ```
+
+All quality gates run locally. No GitHub Actions workflow is checked in; CI expectations are captured by the `just` recipes and must pass before any commit.
+
+## Design Notes
+
+### Specialist-role gating lives at the service boundary
+
+`warroom.spawn` and `warroom.add` call `_require_specialist_support(adapter)` at the service layer, not inside `TmuxGateway`. The gateway is the low-level tmux wrapper and is intentionally runtime-agnostic; specialist support is a semantic property of the runtime adapter (e.g., Codex skills are per-turn slash commands, not a session-wide persona). Keeping the check adjacent to the adapter lookup prevents the gateway from growing runtime awareness.
+
+### token-capture.sh shells to tmux directly
+
+The PreToolUse hook runs synchronously before the calling agent's MCP server is available to it, so it cannot round-trip through `TmuxGateway`. It reads the tmux status line via `tmux capture-pane` and writes the extracted token count to `registry.db` via a parameterized sqlite3 call. This is the documented exception to the "all tmux side effects through the gateway" rule.
+
+### Legacy warroom_members migration shim
+
+`_migrate_warroom_members` in `server/_db.py` rebuilds pre-stable-member-id and intermediate schemas into the canonical shape on startup. It stays in place because helioy-bus databases live in each user's `~/.helioy/bus/` and may predate ALP-1787. The shim is a no-op on already-migrated databases. Remove after a future fleet-wide reset pass.
 
 ## Dependencies
 
