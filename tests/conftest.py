@@ -137,3 +137,22 @@ def fake_codex_skills(isolated_codex_cache):
     (cache / "empty-dir").mkdir()
 
     yield cache
+
+
+def _insert_member(conn, *, warroom_id, role, tmux_target, pane_id, now,
+                   member_id=None, spawn_order=0, repo=None, runtime="claude",
+                   state="pending", agent_instance_id=None):
+    """Test helper: insert a warroom_members row using the canonical schema."""
+    from server._db import _new_member_id
+
+    member_id = member_id or _new_member_id()
+    conn.execute(
+        "INSERT INTO warroom_members "
+        "(warroom_member_id, warroom_id, desired_runtime, desired_role, "
+        " desired_repo, state, agent_instance_id, spawn_order, "
+        " tmux_target, pane_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (member_id, warroom_id, runtime, role, repo, state,
+         agent_instance_id, spawn_order, tmux_target, pane_id, now, now),
+    )
+    return member_id
