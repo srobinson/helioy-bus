@@ -104,6 +104,159 @@ def test_warroom_status_cross_references_agents(monkeypatch):
     assert member["spawn_order"] == 0
 
 
+def test_warroom_status_reconciles_restarted_member_identity(monkeypatch):
+    """A restarted pane updates the persisted agent_instance_id."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    old_agent_id = "project:helioy-tools:backend-engineer:main:2.0:old"
+    new_agent_id = "project:helioy-tools:backend-engineer:main:2.0:new"
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("restart-wr", "main", "restart-wr", "/tmp", now, "active"),
+        )
+        member_id = _insert_member(
+            conn,
+            warroom_id="restart-wr",
+            role="helioy-tools:backend-engineer",
+            tmux_target="main:2.0",
+            pane_id="%20",
+            now=now,
+            state="active",
+            agent_instance_id=old_agent_id,
+        )
+        conn.execute(
+            "INSERT INTO agents "
+            "(agent_id, cwd, tmux_target, pid, registered_at, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (new_agent_id, "/tmp", "main:2.0", 1234, now, now),
+        )
+
+    monkeypatch.setattr(gateway, "pane_alive", lambda t: True)
+
+    statuses = wm.warroom_status(name="restart-wr")
+    member = statuses[0]["members"][0]
+    assert member["warroom_member_id"] == member_id
+    assert member["registered"] is True
+    assert member["state"] == "active"
+    assert member["agent_instance_id"] == new_agent_id
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT state, agent_instance_id FROM warroom_members "
+            "WHERE warroom_member_id = ?",
+            (member_id,),
+        ).fetchone()
+        assert row["state"] == "active"
+        assert row["agent_instance_id"] == new_agent_id
+
+
+def test_warroom_status_reconciles_unregistered_member_state(monkeypatch):
+    """Losing registration clears stale persisted identity and active state."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    stale_agent_id = "project:helioy-tools:backend-engineer:main:2.0"
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("unregister-wr", "main", "unregister-wr", "/tmp", now, "active"),
+        )
+        member_id = _insert_member(
+            conn,
+            warroom_id="unregister-wr",
+            role="helioy-tools:backend-engineer",
+            tmux_target="main:2.0",
+            pane_id="%20",
+            now=now,
+            state="active",
+            agent_instance_id=stale_agent_id,
+        )
+
+    monkeypatch.setattr(gateway, "pane_alive", lambda t: True)
+
+    statuses = wm.warroom_status(name="unregister-wr")
+    member = statuses[0]["members"][0]
+    assert member["warroom_member_id"] == member_id
+    assert member["registered"] is False
+    assert member["state"] == "pending"
+    assert member["agent_instance_id"] is None
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT state, agent_instance_id FROM warroom_members "
+            "WHERE warroom_member_id = ?",
+            (member_id,),
+        ).fetchone()
+        assert row["state"] == "pending"
+        assert row["agent_instance_id"] is None
+
+
+def test_warroom_status_treats_dead_pane_as_unregistered(monkeypatch):
+    """A stale agents row does not keep a dead pane marked active."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    agent_id = "project:helioy-tools:backend-engineer:main:2.0"
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("dead-pane-wr", "main", "dead-pane-wr", "/tmp", now, "active"),
+        )
+        member_id = _insert_member(
+            conn,
+            warroom_id="dead-pane-wr",
+            role="helioy-tools:backend-engineer",
+            tmux_target="main:2.0",
+            pane_id="%20",
+            now=now,
+            state="active",
+            agent_instance_id=agent_id,
+        )
+        conn.execute(
+            "INSERT INTO agents "
+            "(agent_id, cwd, tmux_target, pid, registered_at, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (agent_id, "/tmp", "main:2.0", 1234, now, now),
+        )
+
+    monkeypatch.setattr(gateway, "pane_alive", lambda t: False)
+
+    statuses = wm.warroom_status(name="dead-pane-wr")
+    member = statuses[0]["members"][0]
+    assert member["warroom_member_id"] == member_id
+    assert member["registered"] is False
+    assert member["pane_alive"] is False
+    assert member["state"] == "pending"
+    assert member["agent_instance_id"] is None
+    assert member["token_usage"] is None
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT state, agent_instance_id FROM warroom_members "
+            "WHERE warroom_member_id = ?",
+            (member_id,),
+        ).fetchone()
+        assert row["state"] == "pending"
+        assert row["agent_instance_id"] is None
+
+
 # ── Warroom: warroom_add ─────────────────────────────────────────────────────
 
 

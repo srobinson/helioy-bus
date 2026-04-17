@@ -19,6 +19,7 @@ HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # pids/<HELIOY_BUS_CODEX_PID>. Keying on $$ matches the register hook's
 # $PPID when it runs as our direct child subprocess.
 export HELIOY_BUS_CODEX_PID=$$
+export HELIOY_RUNTIME=codex
 
 # Reuse the runtime-neutral register hook. It reads stdin JSON for
 # session_id; codex has no session id at wrapper-start time, so pass {}.

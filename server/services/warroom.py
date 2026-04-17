@@ -447,10 +447,9 @@ def status(*, name: str = "") -> list[dict]:
                 tmux_target = m["tmux_target"]
                 pane_alive = gateway.pane_alive(tmux_target)
 
-                registered = m["registered_agent_id"] is not None
-                agent_instance_id = (
-                    m["registered_agent_id"] if registered else m["agent_instance_id"]
-                )
+                registered = pane_alive and m["registered_agent_id"] is not None
+                agent_instance_id = m["registered_agent_id"] if registered else None
+                state = "active" if registered else "pending"
                 token_usage_raw = m["agent_token_usage"] if registered else None
                 token_usage: dict | str | None = token_usage_raw
                 if token_usage_raw:
@@ -462,7 +461,7 @@ def status(*, name: str = "") -> list[dict]:
                     "desired_runtime": m["desired_runtime"],
                     "desired_role": m["desired_role"],
                     "desired_repo": m["desired_repo"],
-                    "state": m["state"],
+                    "state": state,
                     "agent_instance_id": agent_instance_id,
                     "spawn_order": m["spawn_order"],
                     "agent_type": m["desired_role"],

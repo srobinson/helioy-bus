@@ -19,7 +19,7 @@ def whoami(*, agent_id: str) -> dict:
     """Return the registration record for the resolved agent_id."""
     with _db.db() as conn:
         row = conn.execute(
-            "SELECT agent_id, agent_type, tmux_target, cwd, session_id, "
+            "SELECT agent_id, agent_type, runtime, tmux_target, cwd, session_id, "
             "registered_at, token_usage FROM agents WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()
@@ -39,6 +39,7 @@ def register(
     agent_id: str,
     session_id: str,
     agent_type: str,
+    runtime: str = "",
     profile: dict | None,
 ) -> dict:
     """Insert or replace an agent registration.
@@ -53,6 +54,8 @@ def register(
 
     if not session_id:
         session_id = os.environ.get("HELIOY_SESSION_ID", "")
+    if not runtime:
+        runtime = os.environ.get("HELIOY_RUNTIME", "claude")
 
     parent_pid = os.getppid()
     now = _db._now()
@@ -68,11 +71,11 @@ def register(
             """
             INSERT OR REPLACE INTO agents
                 (agent_id, cwd, tmux_target, pid, session_id, agent_type,
-                 profile, registered_at, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 runtime, profile, registered_at, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (agent_id, pwd, tmux_target, parent_pid, session_id, agent_type,
-             profile_json, now, now),
+             runtime, profile_json, now, now),
         )
 
     inbox = _db.INBOX_DIR / agent_id

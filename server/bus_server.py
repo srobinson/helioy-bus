@@ -49,6 +49,7 @@ def register_agent(
     agent_id: str = "",
     session_id: str = "",
     agent_type: str = "general",
+    runtime: str = "",
     profile: dict | None = None,
 ) -> dict:
     """Register this Claude Code instance as an agent on the helioy-bus.
@@ -67,6 +68,8 @@ def register_agent(
         agent_type: Specialist role of this agent (e.g. "general",
                     "backend-engineer", "mobile-engineer"). Defaults to
                     "general". Used for role-based addressing in send_message.
+        runtime: Runtime id for this registration (e.g. "claude", "codex").
+                 Empty string falls back to HELIOY_RUNTIME, then "claude".
         profile: Optional agent profile dict with structural identity fields:
                  owns (list of repo/crate names), consumes (list of dependencies),
                  capabilities (list of available MCP server names),
@@ -82,6 +85,7 @@ def register_agent(
         agent_id=agent_id,
         session_id=session_id,
         agent_type=agent_type,
+        runtime=runtime,
         profile=profile,
     )
 

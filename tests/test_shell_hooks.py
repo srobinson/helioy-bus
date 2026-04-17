@@ -83,11 +83,13 @@ def test_bus_register_writes_pid_file_and_db_row(isolated_bus):
     conn = sqlite3.connect(isolated_bus / "registry.db")
     try:
         rows = conn.execute(
-            "SELECT agent_id, cwd, agent_type, session_id FROM agents"
+            "SELECT agent_id, cwd, agent_type, runtime, session_id FROM agents"
         ).fetchall()
     finally:
         conn.close()
-    assert rows == [(SMOKE_AGENT_ID, SMOKE_PROJECT_DIR, "general", "test-sid")]
+    assert rows == [
+        (SMOKE_AGENT_ID, SMOKE_PROJECT_DIR, "general", "claude", "test-sid")
+    ]
 
 
 def test_bus_unregister_removes_row_and_pid_file(isolated_bus):
@@ -133,9 +135,9 @@ def test_bus_register_evicts_stale_tmux_target(isolated_bus):
     try:
         conn.execute(
             "INSERT INTO agents "
-            "(agent_id, cwd, tmux_target, pid, session_id, agent_type, "
+            "(agent_id, cwd, tmux_target, pid, session_id, agent_type, runtime, "
             "registered_at, last_seen) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 "stale:agent:fake-session:0.0",
                 "/tmp/other-repo",
@@ -143,6 +145,7 @@ def test_bus_register_evicts_stale_tmux_target(isolated_bus):
                 99999,
                 "old-sid",
                 "general",
+                "claude",
                 "2020-01-01T00:00:00+00:00",
                 "2020-01-01T00:00:00+00:00",
             ),
@@ -268,14 +271,15 @@ def test_codex_launch_wrapper_records_codex_agent_type_in_registry(
         conn = sqlite3.connect(isolated_bus / "registry.db")
         try:
             rows = conn.execute(
-                "SELECT agent_id, pid, agent_type FROM agents"
+                "SELECT agent_id, pid, agent_type, runtime FROM agents"
             ).fetchall()
         finally:
             conn.close()
         assert len(rows) == 1, f"expected one agent row, got {rows}"
-        agent_id, pid, agent_type = rows[0]
+        agent_id, pid, agent_type, runtime = rows[0]
         assert agent_id == SMOKE_AGENT_ID
         assert agent_type == "general"
+        assert runtime == "codex"
         # PID file exists at pids/<wrapper_pid> with agent_id contents.
         pid_file = isolated_bus / "pids" / str(pid)
         assert pid_file.exists(), f"PID file missing at {pid_file}"

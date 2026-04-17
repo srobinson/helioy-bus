@@ -47,6 +47,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
             pid           INTEGER,
             session_id    TEXT NOT NULL DEFAULT '',
             agent_type    TEXT NOT NULL DEFAULT 'general',
+            runtime       TEXT NOT NULL DEFAULT 'claude',
             profile       TEXT,
             registered_at TEXT NOT NULL,
             last_seen     TEXT NOT NULL
@@ -88,6 +89,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
     # Migration: add agent_type column for existing databases
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE agents ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'general'")
+    # Migration: add runtime column for existing databases
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE agents ADD COLUMN runtime TEXT NOT NULL DEFAULT 'claude'")
     # Migration: add profile column for existing databases (nullable, no default)
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE agents ADD COLUMN profile TEXT")

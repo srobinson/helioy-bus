@@ -71,43 +71,58 @@ def prune_archived_messages(agent_id: str, *, max_age_days: int = 7) -> int:
 
 
 def backfill_warroom_member_agent_ids(warroom_id: str = "") -> int:
-    """Fill in `warroom_members.agent_instance_id` from the agents table.
+    """Reconcile persisted member identity and state against live runtime state.
 
-    Members spawn before their runtime process registers on the bus, so
-    `agent_instance_id` lands NULL initially with `state='pending'`.
-    Once a registration arrives whose `tmux_target` matches a member,
-    this writes the agent_instance_id into the member row and advances
-    state to `active`, bumping `updated_at`.
+    A member is live only when both of these are true:
 
-    `warroom_id` filters to one warroom; empty backfills every active
-    member. Returns the count updated.
+    1. An `agents` row exists for the member's `tmux_target`
+    2. The pane itself is still alive
+
+    Reconciliation is bidirectional. It promotes pending members to
+    active when a live registration appears, advances
+    `agent_instance_id` when a pane restarts with a new agent_id, and
+    clears stale identity/state when registration disappears or the pane
+    is dead. Returns the count of rows updated.
     """
     now = _db._now()
+    updated = 0
     with _db.db() as conn:
+        params: tuple[str, ...] = ()
+        where = ""
         if warroom_id:
-            rows = conn.execute(
-                """
-                SELECT m.warroom_member_id, a.agent_id
-                FROM warroom_members m
-                JOIN agents a ON a.tmux_target = m.tmux_target
-                WHERE m.warroom_id = ? AND m.agent_instance_id IS NULL
-                """,
-                (warroom_id,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT m.warroom_member_id, a.agent_id
-                FROM warroom_members m
-                JOIN agents a ON a.tmux_target = m.tmux_target
-                WHERE m.agent_instance_id IS NULL
-                """
-            ).fetchall()
+            where = "WHERE m.warroom_id = ?"
+            params = (warroom_id,)
+
+        rows = conn.execute(
+            f"""
+            SELECT m.warroom_member_id,
+                   m.tmux_target,
+                   m.state,
+                   m.agent_instance_id,
+                   a.agent_id AS registered_agent_id
+            FROM warroom_members m
+            LEFT JOIN agents a ON a.tmux_target = m.tmux_target
+            {where}
+            """,
+            params,
+        ).fetchall()
+
         for r in rows:
+            pane_alive = gateway.pane_alive(r["tmux_target"])
+            live_agent_id = r["registered_agent_id"] if pane_alive else None
+            desired_state = "active" if live_agent_id else "pending"
+
+            if (
+                r["agent_instance_id"] == live_agent_id
+                and r["state"] == desired_state
+            ):
+                continue
+
             conn.execute(
                 "UPDATE warroom_members "
-                "SET agent_instance_id = ?, state = 'active', updated_at = ? "
+                "SET agent_instance_id = ?, state = ?, updated_at = ? "
                 "WHERE warroom_member_id = ?",
-                (r["agent_id"], now, r["warroom_member_id"]),
+                (live_agent_id, desired_state, now, r["warroom_member_id"]),
             )
-    return len(rows)
+            updated += 1
+    return updated

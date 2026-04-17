@@ -155,6 +155,23 @@ def test_send_message_nudges_live_pane(set_sender):
     assert result["nudged"] is True
 
 
+def test_send_message_skips_codex_nudge(set_sender, monkeypatch):
+    import server.bus_server as bm
+
+    monkeypatch.setenv("HELIOY_RUNTIME", "codex")
+    bm.register_agent(pwd="/tmp/codex", tmux_target="main:0.0", agent_id="codex")
+    set_sender("sender")
+    with (
+        patch.object(gateway, "pane_alive") as mock_alive,
+        patch.object(gateway, "nudge") as mock_nudge,
+    ):
+        result = bm.send_message(to="codex", content="ping")
+    assert result["delivered"] is True
+    assert result["nudged"] is False
+    mock_alive.assert_not_called()
+    mock_nudge.assert_not_called()
+
+
 # ── Role-based messaging ─────────────────────────────────────────────────────
 
 

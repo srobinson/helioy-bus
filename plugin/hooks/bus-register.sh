@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bus-register.sh: SessionStart hook for helioy-bus
 #
-# Registers this Claude Code instance directly into the bus SQLite registry.
+# Registers this runtime instance directly into the bus SQLite registry.
 # Uses direct DB writes to avoid MCP subprocess overhead in lifecycle hooks.
 # Gracefully no-ops if Python or the bus dir is unavailable.
 #
@@ -21,6 +21,7 @@ resolve_agent_id
 
 AGENT_ID="$HELIOY_AGENT_ID"
 AGENT_TYPE="$HELIOY_AGENT_TYPE"
+RUNTIME="${HELIOY_RUNTIME:-claude}"
 
 # Derive TMUX_TARGET for the registry record (used for nudges).
 TMUX_TARGET=""
@@ -84,6 +85,7 @@ _HELIOY_PWD="$PWD_EFFECTIVE" \
 _HELIOY_TMUX="$TMUX_TARGET" \
 _HELIOY_SESSION_ID="$SESSION_ID" \
 _HELIOY_AGENT_TYPE="$AGENT_TYPE" \
+_HELIOY_RUNTIME="$RUNTIME" \
 _HELIOY_PID="$PPID" \
 HELIOY_BUS_ROOT="$HELIOY_BUS_ROOT" \
 python3 - <<'PYEOF' 2>"$PY_STDERR"
@@ -125,8 +127,9 @@ with db() as conn:
     conn.execute(
         """
         INSERT OR REPLACE INTO agents
-            (agent_id, cwd, tmux_target, pid, session_id, agent_type, registered_at, last_seen)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (agent_id, cwd, tmux_target, pid, session_id, agent_type, runtime,
+             registered_at, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             agent_id,
@@ -135,6 +138,7 @@ with db() as conn:
             int(os.environ["_HELIOY_PID"]),
             os.environ.get("_HELIOY_SESSION_ID", ""),
             os.environ.get("_HELIOY_AGENT_TYPE", "general"),
+            os.environ.get("_HELIOY_RUNTIME", "claude"),
             _now(), _now(),
         ),
     )

@@ -188,6 +188,13 @@ def test_nudge_sends_cancel_before_text_when_pane_in_copy_mode():
     assert calls[3][1:] == ["send-keys", "-t", "main:1.0", "Enter"]
 
 
+def test_nudge_suppresses_codex_runtime_without_tmux_text():
+    gw = TmuxGateway()
+    with patch("server._tmux.subprocess.run") as mock_run:
+        assert gw.nudge("main:1.0", runtime="codex") is False
+    mock_run.assert_not_called()
+
+
 def test_nudge_skips_cancel_when_pane_not_in_copy_mode():
     """When pane_in_mode != '1', nudge goes straight to text + Enter."""
     gw = TmuxGateway()

@@ -218,6 +218,26 @@ def test_register_agent_stores_agent_type():
     assert agent["agent_type"] == "backend-engineer"
 
 
+def test_register_agent_stores_runtime(monkeypatch):
+    import server.bus_server as bm
+
+    monkeypatch.setenv("HELIOY_RUNTIME", "codex")
+    bm.register_agent(pwd="/tmp/codex", agent_id="codex")
+    agents = bm.list_agents()
+    agent = next(a for a in agents if a["agent_id"] == "codex")
+    assert agent["runtime"] == "codex"
+
+
+def test_register_agent_explicit_runtime_overrides_env(monkeypatch):
+    import server.bus_server as bm
+
+    monkeypatch.setenv("HELIOY_RUNTIME", "claude")
+    bm.register_agent(pwd="/tmp/codex", agent_id="codex-explicit", runtime="codex")
+    agents = bm.list_agents()
+    agent = next(a for a in agents if a["agent_id"] == "codex-explicit")
+    assert agent["runtime"] == "codex"
+
+
 def test_register_agent_default_type_is_general():
     import server.bus_server as bm
 

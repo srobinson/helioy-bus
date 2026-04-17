@@ -79,14 +79,15 @@ def _resolve_recipients(conn, *, sender_id: str, to: str) -> tuple[list[dict], d
     """Look up recipients for `to`. Returns (recipients, error_dict_or_None)."""
     if to == "*":
         rows = conn.execute(
-            "SELECT agent_id, tmux_target FROM agents WHERE agent_id != ?",
+            "SELECT agent_id, tmux_target, runtime FROM agents WHERE agent_id != ?",
             (sender_id,),
         ).fetchall()
         return [dict(r) for r in rows], None
     if to.startswith("role:"):
         role = to[len("role:"):]
         rows = conn.execute(
-            "SELECT agent_id, tmux_target FROM agents WHERE agent_type = ? AND agent_id != ?",
+            "SELECT agent_id, tmux_target, runtime FROM agents "
+            "WHERE agent_type = ? AND agent_id != ?",
             (role, sender_id),
         ).fetchall()
         recipients = [dict(r) for r in rows]
@@ -100,7 +101,7 @@ def _resolve_recipients(conn, *, sender_id: str, to: str) -> tuple[list[dict], d
             }
         return recipients, None
     row = conn.execute(
-        "SELECT agent_id, tmux_target FROM agents WHERE agent_id = ?",
+        "SELECT agent_id, tmux_target, runtime FROM agents WHERE agent_id = ?",
         (to,),
     ).fetchone()
     if row is None:
@@ -145,6 +146,7 @@ def send(
     for recipient in recipients:
         target_id = recipient["agent_id"]
         tmux_target = recipient.get("tmux_target", "")
+        runtime = recipient.get("runtime", "")
 
         payload = {
             "id": message_id,
@@ -177,9 +179,10 @@ def send(
         if (
             nudge
             and tmux_target
+            and runtime != "codex"
             and _nudge_allowed(target_id)
             and gateway.pane_alive(tmux_target)
-            and gateway.nudge(tmux_target)
+            and gateway.nudge(tmux_target, runtime=runtime)
         ):
             nudged_targets.append(target_id)
             _record_nudge(target_id)

@@ -228,6 +228,7 @@ def test_profile_migration_from_shell_hook_created_db(tmp_path, monkeypatch):
     agents = bm.list_agents()
     assert len(agents) == 1
     assert agents[0].get("profile") == {"owns": ["myproject"]}
+    assert agents[0]["runtime"] == "claude"
 
 
 # ── Token tracking: schema migration ─────────────────────────────────────────
@@ -286,9 +287,10 @@ def test_token_usage_migration_from_older_schema(tmp_path, monkeypatch):
     # Open with _init_db migration
     with _db_mod.db() as conn:
         row = conn.execute(
-            "SELECT token_usage FROM agents WHERE agent_id = 'old-agent'"
+            "SELECT token_usage, runtime FROM agents WHERE agent_id = 'old-agent'"
         ).fetchone()
         assert row["token_usage"] == "{}"
+        assert row["runtime"] == "claude"
 
 
 # ── Token tracking: list_agents includes token_usage ─────────────────────────

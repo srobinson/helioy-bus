@@ -100,12 +100,15 @@ class TmuxGateway:
 
     # --- nudging ---
 
-    def nudge(self, tmux_target: str) -> bool:
-        """Send a 'you have mail!' keystroke to wake an idle agent session.
+    def nudge(self, tmux_target: str, runtime: str = "") -> bool:
+        """Send a wake-up keystroke to an idle agent session.
 
-        Exits copy-mode first if the pane is in it, then sends literal text
-        followed by Enter as a separate key.
+        Claude sessions receive the existing mail prompt. Codex panes do
+        not support that prompt, so nudges are suppressed for them.
         """
+        if runtime == "codex":
+            _db._dbg(f"nudge: target={tmux_target!r} runtime='codex' suppressed")
+            return False
         try:
             mode = self._run(
                 "display-message", "-t", tmux_target, "-p", "#{pane_in_mode}",
