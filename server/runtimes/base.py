@@ -100,6 +100,19 @@ class RuntimeAdapter(Protocol):
         """
         ...
 
+    @property
+    def message_suffix(self) -> str:
+        """Trailing text appended to every inbox message addressed to this runtime.
+
+        Runtimes whose TUI spontaneously asks the human for permission
+        before acting on an incoming agent message return a short
+        authorization preamble here; runtimes that already act on bus
+        messages autonomously return ``""``. The service layer appends
+        the suffix per-recipient before writing the inbox payload, so a
+        broadcast to mixed runtimes stays coherent for each reader.
+        """
+        ...
+
     def agents_cache_dir(self) -> Path:
         """Return the root of this runtime's agent/skill catalogue on disk."""
         ...

@@ -40,6 +40,11 @@ def test_claude_adapter_satisfies_runtime_adapter_protocol():
     assert isinstance(CLAUDE, RuntimeAdapter)
 
 
+def test_claude_adapter_message_suffix_is_empty():
+    """Claude acts on bus messages directly; no authorization preamble."""
+    assert CLAUDE.message_suffix == ""
+
+
 # ── Claude adapter: launch command ───────────────────────────────────────────
 
 
@@ -272,6 +277,17 @@ def test_codex_adapter_is_distinct_class_from_claude():
     """Each runtime gets its own class, not a relabel of Claude's."""
     assert isinstance(CODEX, CodexRuntimeAdapter)
     assert not isinstance(CODEX, ClaudeRuntimeAdapter)
+
+
+def test_codex_adapter_message_suffix_grants_authorization():
+    """Codex prompts the human before acting on unsolicited bus messages;
+    the suffix is an in-message authorization that keeps the agent
+    autonomous. Contract: non-empty, includes the authorization phrase,
+    and invites a reply to sender for questions."""
+    suffix = CODEX.message_suffix
+    assert suffix
+    assert "authorized to act" in suffix
+    assert "reply to sender" in suffix
 
 
 # ── Codex adapter: launch command ────────────────────────────────────────────

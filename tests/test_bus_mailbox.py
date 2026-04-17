@@ -290,3 +290,52 @@ def test_send_message_role_creates_inbox_files(set_sender):
     # frontend-engineer should not receive the message
     fe_files = list(fe_inbox.glob("*.json")) if fe_inbox.exists() else []
     assert fe_files == []
+
+
+# ── Runtime-specific message suffix ──────────────────────────────────────────
+
+
+def test_send_message_appends_codex_suffix_only_for_codex_recipient(set_sender):
+    """Codex recipients receive the authorization preamble on every
+    inbox payload; claude recipients receive the original content
+    unmodified. Broadcasts to mixed runtimes must address each reader
+    in their own contract."""
+    import server._db as _db_mod
+    import server.bus_server as bm
+    from server.runtimes.codex import CODEX
+
+    bm.register_agent(pwd="/tmp/c_claude", agent_id="c_claude", runtime="claude")
+    bm.register_agent(pwd="/tmp/c_codex", agent_id="c_codex", runtime="codex")
+
+    set_sender("sender")
+    bm.send_message(to="*", content="hello agents", nudge=False)
+
+    claude_inbox = _db_mod.INBOX_DIR / "c_claude"
+    codex_inbox = _db_mod.INBOX_DIR / "c_codex"
+
+    claude_payload = json.loads(next(claude_inbox.glob("*.json")).read_text())
+    codex_payload = json.loads(next(codex_inbox.glob("*.json")).read_text())
+
+    assert claude_payload["content"] == "hello agents"
+    assert codex_payload["content"] == "hello agents" + CODEX.message_suffix
+
+
+def test_send_message_does_not_append_suffix_for_unknown_runtime(set_sender):
+    """Unknown-runtime rows (legacy pre-migration data) get the raw
+    content; we only know the preamble is safe for runtimes we model."""
+    import server._db as _db_mod
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/legacy", agent_id="legacy")
+    # Override runtime to a value no adapter is registered under.
+    with _db_mod.db() as conn:
+        conn.execute(
+            "UPDATE agents SET runtime = 'mystery' WHERE agent_id = 'legacy'"
+        )
+
+    set_sender("sender")
+    bm.send_message(to="legacy", content="raw", nudge=False)
+
+    inbox = _db_mod.INBOX_DIR / "legacy"
+    payload = json.loads(next(inbox.glob("*.json")).read_text())
+    assert payload["content"] == "raw"

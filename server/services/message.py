@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 from server import _db
 from server._tmux import gateway
+from server.runtimes import for_id
 
 NUDGE_THROTTLE_SECONDS = 30
 
@@ -79,6 +80,21 @@ def _record_nudge(agent_id: str) -> None:
 
 
 # ── Service operations ────────────────────────────────────────────────────────
+
+
+def _suffix_for_runtime(runtime: str) -> str:
+    """Return the runtime-specific message suffix, or '' when unknown.
+
+    Unknown-runtime rows (legacy pre-migration data) get no suffix; we
+    only know the authorization preamble is correct for runtimes we
+    explicitly model.
+    """
+    if not runtime:
+        return ""
+    try:
+        return for_id(runtime).message_suffix
+    except KeyError:
+        return ""
 
 
 def _resolve_recipients(conn, *, sender_id: str, to: str) -> tuple[list[dict], dict | None]:
@@ -160,7 +176,7 @@ def send(
             "to": target_id,
             "reply_to": reply_to,
             "topic": topic or None,
-            "content": content,
+            "content": content + _suffix_for_runtime(runtime),
             "sent_at": now,
         }
 

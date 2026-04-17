@@ -24,6 +24,9 @@ _CLAUDE_TOKENS_RE = re.compile(r"(\d+) tokens")
 class ClaudeRuntimeAdapter:
     runtime_id = "claude"
     self_pid_env = "HELIOY_BUS_CLAUDE_PID"
+    # Claude acts on bus messages without human intermediation; no
+    # authorization preamble is needed.
+    message_suffix = ""
 
     # Claude enacts a specialist persona via ``--agent <qualified-name>``,
     # so the session really is bound to that role from launch onward.

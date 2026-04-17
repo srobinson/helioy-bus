@@ -18,6 +18,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from server.runtimes.codex import CODEX_MESSAGE_SUFFIX
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-register.sh"
 UNREGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-unregister.sh"
@@ -340,7 +342,9 @@ def test_mixed_runtime_tmux_identity_smoke(
         assert len(msgs) == 1
         assert msgs[0]["from"] == smoke_id
         assert msgs[0]["topic"] == "mixed-smoke"
-        assert msgs[0]["content"] == "hello codex"
+        # Codex recipients receive the runtime authorization preamble on
+        # every payload; claude recipients (checked below) do not.
+        assert msgs[0]["content"] == "hello codex" + CODEX_MESSAGE_SUFFIX
 
         set_sender(codex_id)
         reply = bm.send_message(
