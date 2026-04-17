@@ -30,4 +30,4 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-codex --dangerously-bypass-approvals-and-sandbox "$@"
+codex "$@"

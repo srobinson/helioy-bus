@@ -174,7 +174,8 @@ def test_nudge_sends_cancel_before_text_when_pane_in_copy_mode():
         (b"1\n", 0),   # display-message pane_in_mode -> "1"
         (b"", 0),      # send-keys -X cancel
         (b"", 0),      # send-keys -l "you have mail!"
-        (b"", 0),      # send-keys -H 0d (carriage return)
+        (b"", 0),      # send-keys -H 0d (prime input)
+        (b"", 0),      # send-keys Enter (submit)
     ]
     with patch(
         "server._tmux.subprocess.run", side_effect=_scripted_run(responses)
@@ -186,17 +187,19 @@ def test_nudge_sends_cancel_before_text_when_pane_in_copy_mode():
     assert calls[1][1:] == ["send-keys", "-t", "main:1.0", "-X", "cancel"]
     assert calls[2][1:] == ["send-keys", "-t", "main:1.0", "-l", "you have mail!"]
     assert calls[3][1:] == ["send-keys", "-t", "main:1.0", "-H", "0d"]
+    assert calls[4][1:] == ["send-keys", "-t", "main:1.0", "Enter"]
 
 
-def test_nudge_submits_via_hex_carriage_return_for_codex_runtime():
-    """Codex's TUI silent-fails on send-keys Enter, so the submit uses
-    hex 0d. The runtime arg is accepted but does not gate the nudge;
-    one path services every runtime."""
+def test_nudge_submits_with_prime_and_enter_for_codex_runtime():
+    """Codex requires both the hex-0d prime and the Enter keyname to
+    actually submit. Neither call alone is reliable across runtimes;
+    the pair covers both Claude and Codex."""
     gw = TmuxGateway()
     responses = [
         (b"0\n", 0),   # mode check: not in copy-mode
         (b"", 0),      # send-keys -l
-        (b"", 0),      # send-keys -H 0d
+        (b"", 0),      # send-keys -H 0d (prime)
+        (b"", 0),      # send-keys Enter (submit)
     ]
     with patch(
         "server._tmux.subprocess.run", side_effect=_scripted_run(responses)
@@ -204,16 +207,18 @@ def test_nudge_submits_via_hex_carriage_return_for_codex_runtime():
         assert gw.nudge("main:1.0", runtime="codex") is True
 
     calls = [call.args[0] for call in mock_run.call_args_list]
-    assert calls[-1][1:] == ["send-keys", "-t", "main:1.0", "-H", "0d"]
+    assert calls[-2][1:] == ["send-keys", "-t", "main:1.0", "-H", "0d"]
+    assert calls[-1][1:] == ["send-keys", "-t", "main:1.0", "Enter"]
 
 
 def test_nudge_skips_cancel_when_pane_not_in_copy_mode():
-    """When pane_in_mode != '1', nudge goes straight to text + submit."""
+    """When pane_in_mode != '1', nudge goes straight to text + prime + submit."""
     gw = TmuxGateway()
     responses = [
         (b"0\n", 0),   # not in copy-mode
         (b"", 0),      # send-keys -l
         (b"", 0),      # send-keys -H 0d
+        (b"", 0),      # send-keys Enter
     ]
     with patch(
         "server._tmux.subprocess.run", side_effect=_scripted_run(responses)
@@ -221,7 +226,7 @@ def test_nudge_skips_cancel_when_pane_not_in_copy_mode():
         assert gw.nudge("main:1.0") is True
 
     commands = [call.args[0][1] for call in mock_run.call_args_list]
-    assert commands == ["display-message", "send-keys", "send-keys"]
+    assert commands == ["display-message", "send-keys", "send-keys", "send-keys"]
 
 
 def test_nudge_returns_false_when_mode_check_fails():
@@ -241,12 +246,24 @@ def test_nudge_returns_false_when_text_send_fails():
         assert gw.nudge("main:1.0") is False
 
 
+def test_nudge_returns_false_when_prime_fails():
+    gw = TmuxGateway()
+    responses = [
+        (b"0\n", 0),   # mode check ok
+        (b"", 0),      # text send ok
+        (b"", 1),      # -H 0d prime fails
+    ]
+    with patch("server._tmux.subprocess.run", side_effect=_scripted_run(responses)):
+        assert gw.nudge("main:1.0") is False
+
+
 def test_nudge_returns_false_when_submit_fails():
     gw = TmuxGateway()
     responses = [
         (b"0\n", 0),   # mode check ok
         (b"", 0),      # text send ok
-        (b"", 1),      # -H 0d submit fails
+        (b"", 0),      # -H 0d prime ok
+        (b"", 1),      # Enter submit fails
     ]
     with patch("server._tmux.subprocess.run", side_effect=_scripted_run(responses)):
         assert gw.nudge("main:1.0") is False

@@ -103,10 +103,13 @@ class TmuxGateway:
     def nudge(self, tmux_target: str, runtime: str = "") -> bool:
         """Send a wake-up keystroke to an idle agent session.
 
-        Runtime-neutral: submits via ``send-keys -H 0d`` (hex carriage
-        return) rather than the ``Enter`` key name. The named-key path
-        silent-fails inside Codex's TUI, while ``0d`` is honored by both
-        Claude Code and Codex. One nudge path for every runtime.
+        Runtime-neutral three-step submit: type the text literally,
+        commit a hex carriage return to prime the input buffer, then
+        fire the named ``Enter`` key to submit. Neither submit call
+        alone is reliable across both Claude Code and Codex TUIs
+        (Codex swallows the paste-adjacent CR when it arrives without
+        a priming step; Claude's prompt requires the Enter keyname
+        binding). Both together cover both runtimes.
         """
         del runtime  # retained for call-site compatibility
         try:
@@ -127,8 +130,13 @@ class TmuxGateway:
         ):
             _db._dbg(f"nudge: target={tmux_target!r} text send failed")
             return False
-        ok = self._run_silent(
+        if not self._run_silent(
             "send-keys", "-t", tmux_target, "-H", "0d", timeout=3
+        ):
+            _db._dbg(f"nudge: target={tmux_target!r} prime (0d) failed")
+            return False
+        ok = self._run_silent(
+            "send-keys", "-t", tmux_target, "Enter", timeout=3
         )
         _db._dbg(f"nudge: target={tmux_target!r} delivered={ok}")
         return ok

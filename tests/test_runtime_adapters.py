@@ -283,9 +283,9 @@ def test_codex_build_launch_command_points_at_launch_wrapper():
     wrapper = Path(cmd)
     assert wrapper.name == "codex-launch.sh"
     assert wrapper.exists(), f"wrapper missing: {wrapper}"
-    # Wrapper drives codex with the bypass flag internally.
+    # Wrapper forwards arguments to codex; the caller controls flags.
     content = wrapper.read_text()
-    assert "codex --dangerously-bypass-approvals-and-sandbox" in content
+    assert 'codex "$@"' in content
 
 
 def test_codex_build_launch_command_ignores_qualified_name():
