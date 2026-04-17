@@ -39,20 +39,25 @@ def reset_discovery_cache():
 
 @pytest.fixture(autouse=True)
 def isolated_codex_cache(tmp_path, monkeypatch):
-    """Point the Codex adapter at an empty tmp dir by default.
+    """Point Codex discovery at empty tmp roots by default.
 
     Without this, Codex discovery would read the developer's real
-    ``~/.codex/skills`` directory and leak it into union-discovery
-    assertions. Tests that need Codex skills create them under this
-    directory and monkeypatch the adapter explicitly (see
+    ``~/.codex/skills`` and ``~/.agents/skills`` directories and leak
+    them into union-discovery assertions. Tests that need Codex skills
+    create them under these directories and monkeypatch the adapter
+    explicitly through this fixture stack (see
     ``fake_codex_skills``).
     """
     from server.runtimes.codex import CODEX
 
     codex_cache = tmp_path / "codex-skills"
     codex_cache.mkdir()
+    shared_cache = tmp_path / "shared-skills"
+    shared_cache.mkdir()
     monkeypatch.setattr(CODEX, "agents_cache_dir", lambda: codex_cache)
-    yield codex_cache
+    monkeypatch.setattr(CODEX, "shared_skills_dir", lambda: shared_cache)
+    monkeypatch.setattr(CODEX, "skill_roots", lambda: [codex_cache, shared_cache])
+    yield {"codex": codex_cache, "shared": shared_cache}
 
 
 @pytest.fixture()
@@ -112,10 +117,12 @@ def fake_plugins(tmp_path, monkeypatch):
 def fake_codex_skills(isolated_codex_cache):
     """Create a fake Codex skills catalogue with known SKILL.md files.
 
-    Uses the directory produced by ``isolated_codex_cache`` so Codex
-    adapter discovery reads from this fixture's cache.
+    Uses the directories produced by ``isolated_codex_cache`` so Codex
+    adapter discovery reads from both the runtime-local and shared trees.
+    Returns the runtime-local tree for tests that need to add extra skills.
     """
-    cache = isolated_codex_cache
+    cache = isolated_codex_cache["codex"]
+    shared = isolated_codex_cache["shared"]
 
     (cache / "agent-browser").mkdir()
     (cache / "agent-browser" / "SKILL.md").write_text(
@@ -125,8 +132,16 @@ def fake_codex_skills(isolated_codex_cache):
         '---\n'
     )
 
-    (cache / "linear").mkdir()
-    (cache / "linear" / "SKILL.md").write_text(
+    (cache / ".system" / "openai-docs").mkdir(parents=True)
+    (cache / ".system" / "openai-docs" / "SKILL.md").write_text(
+        '---\n'
+        'name: openai-docs\n'
+        'description: "Use official OpenAI docs"\n'
+        '---\n'
+    )
+
+    (shared / "linear").mkdir()
+    (shared / "linear" / "SKILL.md").write_text(
         '---\n'
         'name: linear\n'
         'description: "Manage issues in Linear"\n'

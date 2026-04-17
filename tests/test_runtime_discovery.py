@@ -46,10 +46,14 @@ def test_claude_adapter_discover_returns_empty_when_cache_missing(tmp_path, monk
 
 
 def test_codex_adapter_discover_agent_types_returns_skills(fake_codex_skills):
-    """Codex adapter walks ``~/.codex/skills/*/SKILL.md`` and emits codex-namespaced entries."""
+    """Codex discovery covers local, nested system, and shared skill trees."""
     agents = CODEX.discover_agent_types()
     qualified = [a["qualified_name"] for a in agents]
-    assert qualified == ["codex:agent-browser", "codex:linear"]
+    assert qualified == [
+        "codex:agent-browser",
+        "codex:linear",
+        "codex:openai-docs",
+    ]
     assert all(a["namespace"] == "codex" for a in agents)
     assert all(a["runtime"] == "codex" for a in agents)
 
@@ -62,8 +66,38 @@ def test_codex_adapter_discover_skips_dirs_without_skill_md(fake_codex_skills):
 
 def test_codex_adapter_discover_returns_empty_when_cache_missing(tmp_path, monkeypatch):
     """Codex with no skills dir returns [] rather than raising."""
-    monkeypatch.setattr(CODEX, "agents_cache_dir", lambda: tmp_path / "absent")
+    monkeypatch.setattr(
+        CODEX,
+        "skill_roots",
+        lambda: [tmp_path / "absent-codex", tmp_path / "absent-shared"],
+    )
     assert CODEX.discover_agent_types() == []
+
+
+def test_codex_adapter_discover_prefers_runtime_local_skill_over_shared_duplicate(
+    isolated_codex_cache,
+):
+    """Local Codex skills win when the shared tree exports the same name."""
+    codex_cache = isolated_codex_cache["codex"]
+    shared_cache = isolated_codex_cache["shared"]
+
+    (codex_cache / "agent-browser").mkdir()
+    (codex_cache / "agent-browser" / "SKILL.md").write_text(
+        '---\n'
+        'name: agent-browser\n'
+        'description: "Local browser skill"\n'
+        '---\n'
+    )
+    (shared_cache / "agent-browser").mkdir()
+    (shared_cache / "agent-browser" / "SKILL.md").write_text(
+        '---\n'
+        'name: agent-browser\n'
+        'description: "Shared browser skill"\n'
+        '---\n'
+    )
+
+    agents = {a["qualified_name"]: a for a in CODEX.discover_agent_types()}
+    assert agents["codex:agent-browser"]["summary"] == "Local browser skill"
 
 
 # ── Shared _scan_agent_types: union semantics ────────────────────────────────
@@ -78,6 +112,7 @@ def test_scan_agent_types_union_sorted_by_qualified_name(fake_plugins, fake_code
     assert qualified == sorted(qualified)
     assert "codex:agent-browser" in qualified
     assert "codex:linear" in qualified
+    assert "codex:openai-docs" in qualified
     assert "helioy-tools:backend-engineer" in qualified
     assert "pr-review-toolkit:code-reviewer" in qualified
 
@@ -89,7 +124,7 @@ def test_scan_agent_types_scoped_to_runtime_excludes_other(fake_plugins, fake_co
     codex_only = wr._scan_agent_types("codex")
     assert all(a["runtime"] == "codex" for a in codex_only)
     assert {a["qualified_name"] for a in codex_only} == {
-        "codex:agent-browser", "codex:linear",
+        "codex:agent-browser", "codex:linear", "codex:openai-docs",
     }
 
 

@@ -46,45 +46,62 @@ class CodexRuntimeAdapter:
     def agents_cache_dir(self) -> Path:
         return Path.home() / ".codex" / "skills"
 
-    def discover_agent_types(self) -> list[dict]:
-        """Walk ``~/.codex/skills/{skill}/SKILL.md`` and return skill definitions.
+    def shared_skills_dir(self) -> Path:
+        return Path.home() / ".agents" / "skills"
 
-        Codex skills live one directory deep under the cache root; each
-        folder's ``SKILL.md`` carries the ``name``/``description``
-        frontmatter. All skills share the ``codex`` namespace until Codex
-        grows a plugin/version layer.
+    def skill_roots(self) -> list[Path]:
+        """Return every skill tree that participates in Codex discovery.
+
+        Codex uses its own ``~/.codex/skills`` tree, including nested
+        ``.system/*/SKILL.md`` entries, and this environment also exposes
+        shared skills under ``~/.agents/skills``.
         """
-        cache = self.agents_cache_dir()
-        if not cache.is_dir():
-            return []
+        return [self.agents_cache_dir(), self.shared_skills_dir()]
 
-        result: list[dict] = []
-        for skill_dir in sorted(p for p in cache.iterdir() if p.is_dir()):
-            skill_md = skill_dir / "SKILL.md"
-            if not skill_md.is_file():
+    def discover_agent_types(self) -> list[dict]:
+        """Walk Codex skill trees and return discovered skill definitions.
+
+        Supported layouts:
+
+        * ``~/.codex/skills/{skill}/SKILL.md``
+        * ``~/.codex/skills/.system/{skill}/SKILL.md``
+        * ``~/.agents/skills/{skill}/SKILL.md``
+
+        All discovered skills share the ``codex`` namespace until Codex
+        grows a plugin/version layer. When the same skill name appears in
+        multiple trees, the first root wins so local Codex skills shadow
+        shared ones.
+        """
+        result_by_name: dict[str, dict] = {}
+        for root in self.skill_roots():
+            if not root.is_dir():
                 continue
-            fm = _parse_frontmatter(skill_md)
-            if not fm or "name" not in fm:
-                continue
+            manifests = sorted(root.glob("*/SKILL.md"))
+            manifests.extend(sorted(root.glob(".system/*/SKILL.md")))
+            for skill_md in manifests:
+                fm = _parse_frontmatter(skill_md)
+                if not fm or "name" not in fm:
+                    continue
 
-            short_name = fm["name"]
-            qualified = f"{self._NAMESPACE}:{short_name}"
+                short_name = fm["name"]
+                qualified = f"{self._NAMESPACE}:{short_name}"
+                if qualified in result_by_name:
+                    continue
 
-            summary = fm.get("description", "")
-            if len(summary) > 200:
-                summary = summary[:197] + "..."
+                summary = fm.get("description", "")
+                if len(summary) > 200:
+                    summary = summary[:197] + "..."
 
-            result.append({
-                "qualified_name": qualified,
-                "name": short_name,
-                "namespace": self._NAMESPACE,
-                "summary": summary,
-                "model": fm.get("model", ""),
-                "runtime": self.runtime_id,
-            })
+                result_by_name[qualified] = {
+                    "qualified_name": qualified,
+                    "name": short_name,
+                    "namespace": self._NAMESPACE,
+                    "summary": summary,
+                    "model": fm.get("model", ""),
+                    "runtime": self.runtime_id,
+                }
 
-        result.sort(key=lambda e: e["qualified_name"])
-        return result
+        return [result_by_name[name] for name in sorted(result_by_name)]
 
     def lifecycle_integration(self) -> LifecycleIntegration:
         # Codex has no SessionStart/SessionEnd hook mechanism, so the

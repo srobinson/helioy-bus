@@ -260,6 +260,10 @@ def test_codex_adapter_agents_cache_dir_points_to_codex_skills():
     assert CodexRuntimeAdapter().agents_cache_dir() == Path.home() / ".codex" / "skills"
 
 
+def test_codex_adapter_shared_skills_dir_points_to_agents_skills():
+    assert CodexRuntimeAdapter().shared_skills_dir() == Path.home() / ".agents" / "skills"
+
+
 def test_codex_adapter_satisfies_runtime_adapter_protocol():
     assert isinstance(CODEX, RuntimeAdapter)
 
