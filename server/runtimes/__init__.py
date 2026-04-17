@@ -12,6 +12,7 @@ identity resolution iterates :func:`registered_adapters`.
 from __future__ import annotations
 
 from server.runtimes.base import (
+    LifecycleIntegration,
     RuntimeAdapter,
     default_adapter,
     for_id,
@@ -24,6 +25,7 @@ from server.runtimes.codex import CodexRuntimeAdapter
 __all__ = [
     "ClaudeRuntimeAdapter",
     "CodexRuntimeAdapter",
+    "LifecycleIntegration",
     "RuntimeAdapter",
     "default_adapter",
     "for_id",

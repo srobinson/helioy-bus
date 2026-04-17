@@ -9,8 +9,46 @@ core-code edit.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+
+@dataclass(frozen=True)
+class LifecycleIntegration:
+    """How a runtime integrates with the bus agent lifecycle.
+
+    Each adapter returns one of these to declare, explicitly, which
+    scripts drive startup registration, shutdown registration, and
+    optional usage capture. Replaces the implicit prior assumption that
+    every runtime uses Claude's plugin hook mechanism: Codex has no
+    hook system and drives registration from its own launch wrapper, so
+    the adapter surface makes that asymmetry visible instead of hiding
+    it in a shell script.
+
+    Attributes:
+      startup_script: Executable that registers the agent on the bus.
+        Invocation semantics depend on ``registration_kind``.
+      shutdown_script: Executable that unregisters the agent on
+        teardown (end of session, trap on wrapper exit, ...).
+      usage_capture_script: Optional executable that samples runtime
+        usage metrics (token counts, cost) and writes them to the
+        registry. ``None`` when the runtime has no such mechanism —
+        Codex has no tmux-visible token counter, so it declares
+        ``None`` rather than borrowing Claude's script.
+      registration_kind: How the runtime triggers the scripts:
+
+        * ``"hook"`` — the runtime's plugin system invokes the scripts
+          directly on SessionStart / SessionEnd (Claude).
+        * ``"wrapper"`` — an adapter-provided launch wrapper invokes
+          the startup script up front and installs a trap for the
+          shutdown script (Codex).
+    """
+
+    startup_script: Path
+    shutdown_script: Path
+    usage_capture_script: Path | None
+    registration_kind: str
 
 
 @runtime_checkable
@@ -23,6 +61,8 @@ class RuntimeAdapter(Protocol):
       * runtime capability metadata (agent cache dir, runtime id,
         specialist-role support)
       * agent/skill catalogue discovery
+      * lifecycle integration (startup/shutdown registration)
+      * usage capture (token/cost sampling)
     """
 
     runtime_id: str
@@ -83,6 +123,32 @@ class RuntimeAdapter(Protocol):
         and the list is sorted by ``qualified_name``. An adapter whose
         catalogue directory does not yet exist returns an empty list
         rather than raising.
+        """
+        ...
+
+    def lifecycle_integration(self) -> LifecycleIntegration:
+        """Return the scripts that drive this runtime's bus lifecycle.
+
+        The returned :class:`LifecycleIntegration` describes startup
+        registration, shutdown registration, and optional usage capture.
+        Shared code that needs to reason about lifecycle (install
+        tooling, contract tests) consults this instead of embedding
+        runtime-specific script paths.
+        """
+        ...
+
+    def capture_usage(self, pane_content: str) -> dict | None:
+        """Extract usage metrics from raw pane content.
+
+        ``pane_content`` is the tail of the runtime's tmux pane output,
+        as captured by the usage capture hook. Returns a dict describing
+        the current usage sample (e.g. ``{"tokens": int}``), or ``None``
+        when no sample can be extracted.
+
+        An adapter whose ``lifecycle_integration().usage_capture_script``
+        is ``None`` also returns ``None`` here; the two signals agree so
+        shared code can trust either as the "does this runtime sample
+        usage" probe.
         """
         ...
 

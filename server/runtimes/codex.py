@@ -16,11 +16,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from server.runtimes._frontmatter import _parse_frontmatter
-from server.runtimes.base import register
+from server.runtimes.base import LifecycleIntegration, register
 
-_LAUNCH_WRAPPER = (
-    Path(__file__).parent.parent.parent / "plugin" / "hooks" / "codex-launch.sh"
-)
+_PLUGIN_HOOKS = Path(__file__).resolve().parent.parent.parent / "plugin" / "hooks"
+_LAUNCH_WRAPPER = _PLUGIN_HOOKS / "codex-launch.sh"
 
 
 class CodexRuntimeAdapter:
@@ -86,6 +85,28 @@ class CodexRuntimeAdapter:
 
         result.sort(key=lambda e: e["qualified_name"])
         return result
+
+    def lifecycle_integration(self) -> LifecycleIntegration:
+        # Codex has no SessionStart/SessionEnd hook mechanism, so the
+        # adapter-owned launch wrapper runs bus-register.sh up front and
+        # installs EXIT/INT/TERM traps around bus-unregister.sh. The
+        # wrapper is what build_launch_command returns.
+        return LifecycleIntegration(
+            startup_script=_LAUNCH_WRAPPER,
+            shutdown_script=_PLUGIN_HOOKS / "bus-unregister.sh",
+            usage_capture_script=None,
+            registration_kind="wrapper",
+        )
+
+    def capture_usage(self, pane_content: str) -> dict | None:
+        # Codex exposes no tmux-visible token counter: there is no
+        # equivalent of Claude's ``\d+ tokens`` pattern in the status
+        # bar, so there is nothing for a capture hook to sample. Explicit
+        # None instead of inheriting Claude's regex keeps the fact
+        # visible on the adapter surface. When Codex grows such a
+        # surface, implement the extraction here and add a companion
+        # usage_capture_script on lifecycle_integration().
+        return None
 
 
 CODEX = CodexRuntimeAdapter()

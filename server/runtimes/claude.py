@@ -7,10 +7,18 @@ var, and the ``~/.claude/plugins/cache`` lookup path.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from server.runtimes._frontmatter import _parse_frontmatter
-from server.runtimes.base import register
+from server.runtimes.base import LifecycleIntegration, register
+
+_PLUGIN_HOOKS = Path(__file__).resolve().parent.parent.parent / "plugin" / "hooks"
+
+# Mirrors the ``grep -oE '[0-9]+ tokens'`` pipeline in
+# plugin/hooks/token-capture.sh. Kept module-level so contract tests can
+# assert the two extraction paths stay in sync.
+_CLAUDE_TOKENS_RE = re.compile(r"(\d+) tokens")
 
 
 class ClaudeRuntimeAdapter:
@@ -78,6 +86,26 @@ class ClaudeRuntimeAdapter:
             {k: v for k, v in entry.items() if not k.startswith("_")}
             for entry in sorted(agents.values(), key=lambda e: e["qualified_name"])
         ]
+
+    def lifecycle_integration(self) -> LifecycleIntegration:
+        # Claude Code's plugin system invokes SessionStart/SessionEnd
+        # directly against these scripts; no wrapper needed.
+        return LifecycleIntegration(
+            startup_script=_PLUGIN_HOOKS / "bus-register.sh",
+            shutdown_script=_PLUGIN_HOOKS / "bus-unregister.sh",
+            usage_capture_script=_PLUGIN_HOOKS / "token-capture.sh",
+            registration_kind="hook",
+        )
+
+    def capture_usage(self, pane_content: str) -> dict | None:
+        # Claude's status bar renders ``<n> tokens``; token-capture.sh
+        # greps the same pattern off the tail of the pane. This method
+        # is the canonical extractor and is pinned to the shell pipeline
+        # by test_adapter_lifecycle.py.
+        matches = _CLAUDE_TOKENS_RE.findall(pane_content)
+        if not matches:
+            return None
+        return {"tokens": int(matches[-1])}
 
 
 CLAUDE = ClaudeRuntimeAdapter()
