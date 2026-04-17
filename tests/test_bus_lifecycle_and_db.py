@@ -290,7 +290,7 @@ def test_token_usage_migration_from_older_schema(tmp_path, monkeypatch):
             "SELECT token_usage, runtime FROM agents WHERE agent_id = 'old-agent'"
         ).fetchone()
         assert row["token_usage"] == "{}"
-        assert row["runtime"] == "claude"
+        assert row["runtime"] == "unknown"
 
 
 # ── Token tracking: list_agents includes token_usage ─────────────────────────

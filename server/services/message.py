@@ -179,7 +179,7 @@ def send(
         if (
             nudge
             and tmux_target
-            and runtime != "codex"
+            and runtime == "claude"
             and _nudge_allowed(target_id)
             and gateway.pane_alive(tmux_target)
             and gateway.nudge(tmux_target, runtime=runtime)

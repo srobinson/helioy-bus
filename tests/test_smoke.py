@@ -15,11 +15,13 @@ from __future__ import annotations
 import os
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-register.sh"
 UNREGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-unregister.sh"
+CODEX_LAUNCH = REPO_ROOT / "plugin" / "hooks" / "codex-launch.sh"
 TOKEN_CAPTURE_HOOK = REPO_ROOT / "plugin" / "hooks" / "token-capture.sh"
 
 SMOKE_PROJECT_DIR = "/tmp/helioy-smoke-repo"
@@ -47,6 +49,73 @@ def _run_hook(
         text=True,
         check=False,
     )
+
+
+def _install_tmux_stub(tmp_dir: Path) -> Path:
+    """Write a tmux stub that serves identity and liveness from env."""
+    stub_dir = tmp_dir / "stub-bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "tmux"
+    stub.write_text(
+        "#!/bin/sh\n"
+        "cmd=$1\n"
+        "shift\n"
+        "case \"$cmd\" in\n"
+        "  display-message)\n"
+        "    fmt=${!#}\n"
+        "    while [ $# -gt 0 ]; do\n"
+        "      case \"$1\" in\n"
+        "        -p)\n"
+        "          shift\n"
+        "          ;;\n"
+        "        -t)\n"
+        "          shift 2\n"
+        "          ;;\n"
+        "        *)\n"
+        "          shift\n"
+        "          ;;\n"
+        "      esac\n"
+        "    done\n"
+        "    if [ \"$fmt\" = '#{pane_title}' ]; then\n"
+        "      printf %s \"${HELIOY_TEST_PANE_TITLE:-}\"\n"
+        "      exit 0\n"
+        "    fi\n"
+        "    if [ \"$fmt\" = '#{session_name}:#{window_index}.#{pane_index}' ]; then\n"
+        "      printf %s \"${HELIOY_TEST_TMUX_TARGET:-}\"\n"
+        "      exit 0\n"
+        "    fi\n"
+        "    if [ \"$fmt\" = '#{session_name}' ]; then\n"
+        "      printf %s \"${HELIOY_TEST_SESSION_NAME:-main}\"\n"
+        "      exit 0\n"
+        "    fi\n"
+        "    exit 1\n"
+        "    ;;\n"
+        "  list-panes)\n"
+        "    target=\"\"\n"
+        "    while [ $# -gt 0 ]; do\n"
+        "      case \"$1\" in\n"
+        "        -t)\n"
+        "          target=$2\n"
+        "          shift 2\n"
+        "          ;;\n"
+        "        *)\n"
+        "          shift\n"
+        "          ;;\n"
+        "      esac\n"
+        "    done\n"
+        "    case \",${HELIOY_TEST_ALIVE_TARGETS:-},\" in\n"
+        "      *,$target,*) exit 0 ;;\n"
+        "    esac\n"
+        "    exit 1\n"
+        "    ;;\n"
+        "  set-hook)\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "esac\n"
+        "exit 1\n"
+    )
+    stub.chmod(0o755)
+    return stub_dir
 
 
 def test_full_lifecycle_smoke(isolated_bus, set_sender, tmp_path):
@@ -162,3 +231,145 @@ def test_full_lifecycle_smoke(isolated_bus, set_sender, tmp_path):
     finally:
         conn.close()
     assert rows == []
+
+
+def test_mixed_runtime_tmux_identity_smoke(
+    isolated_bus, set_sender, tmp_path, monkeypatch
+):
+    """Smoke the live startup path with tmux-qualified Claude and Codex peers."""
+    import server.bus_server as bm
+    from server._tmux import gateway
+
+    smoke_target = "main:1.0"
+    smoke_id = f"helioy-smoke-repo:general:{smoke_target}"
+    codex_project_dir = "/tmp/helioy-codex-peer"
+    codex_target = "main:1.1"
+    codex_id = f"helioy-codex-peer:general:{codex_target}"
+
+    stub_dir = _install_tmux_stub(tmp_path)
+    stub_codex = stub_dir / "codex"
+    ready = tmp_path / "codex-ready"
+    done = tmp_path / "codex-done"
+    stub_codex.write_text(
+        "#!/bin/sh\n"
+        f"touch {ready}\n"
+        f"while [ ! -f {done} ]; do sleep 0.05; done\n"
+        "exit 0\n"
+    )
+    stub_codex.chmod(0o755)
+
+    common_env = {
+        **os.environ,
+        "HELIOY_BUS_DIR": str(isolated_bus),
+        "HELIOY_BUS_PYTHON_PATH": str(REPO_ROOT),
+        "PATH": f"{stub_dir}:{os.environ.get('PATH', '')}",
+        "TMUX": "/tmp/fake-tmux-socket,1234,0",
+        "HELIOY_TEST_ALIVE_TARGETS": f"{smoke_target},{codex_target}",
+    }
+
+    smoke_env = {
+        **common_env,
+        "CLAUDE_PROJECT_DIR": SMOKE_PROJECT_DIR,
+        "PWD": SMOKE_PROJECT_DIR,
+        "TMUX_PANE": "%10",
+        "HELIOY_TEST_TMUX_TARGET": smoke_target,
+        "HELIOY_TEST_PANE_TITLE": smoke_id,
+        "HELIOY_TEST_SESSION_NAME": "main",
+    }
+    reg = subprocess.run(
+        ["bash", str(REGISTER_HOOK)],
+        input='{"session_id":"smoke-session"}',
+        env=smoke_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert reg.returncode == 0, reg.stderr
+    assert (isolated_bus / "pids" / str(os.getpid())).read_text().strip() == smoke_id
+
+    codex_env = {
+        **common_env,
+        "CLAUDE_PROJECT_DIR": codex_project_dir,
+        "PWD": codex_project_dir,
+        "TMUX_PANE": "%11",
+        "HELIOY_TEST_TMUX_TARGET": codex_target,
+        "HELIOY_TEST_PANE_TITLE": codex_id,
+        "HELIOY_TEST_SESSION_NAME": "main",
+    }
+    proc = subprocess.Popen(
+        ["bash", str(CODEX_LAUNCH)],
+        env=codex_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        monkeypatch.setenv("PATH", common_env["PATH"])
+        monkeypatch.setenv("HELIOY_TEST_ALIVE_TARGETS", common_env["HELIOY_TEST_ALIVE_TARGETS"])
+
+        deadline = time.time() + 5.0
+        while not ready.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        assert ready.exists(), "codex startup never reached the live session"
+
+        deadline = time.time() + 5.0
+        found = False
+        while time.time() < deadline:
+            active = {a["agent_id"]: a for a in bm.list_agents()}
+            if smoke_id in active and codex_id in active:
+                found = True
+                break
+            time.sleep(0.05)
+        assert found, f"expected tmux-qualified identities, got {active}"
+        assert active[smoke_id]["runtime"] == "claude"
+        assert active[codex_id]["runtime"] == "codex"
+        assert active[smoke_id]["tmux_target"] == smoke_target
+        assert active[codex_id]["tmux_target"] == codex_target
+
+        set_sender(smoke_id)
+        result = bm.send_message(
+            to=codex_id,
+            content="hello codex",
+            topic="mixed-smoke",
+            nudge=False,
+        )
+        assert result["delivered"] is True
+        assert result["recipients"] == [codex_id]
+
+        msgs = bm.get_messages(agent_id=codex_id)
+        assert len(msgs) == 1
+        assert msgs[0]["from"] == smoke_id
+        assert msgs[0]["topic"] == "mixed-smoke"
+        assert msgs[0]["content"] == "hello codex"
+
+        set_sender(codex_id)
+        reply = bm.send_message(
+            to=smoke_id,
+            content="hello claude",
+            topic="mixed-smoke",
+            nudge=False,
+        )
+        assert reply["delivered"] is True
+        assert reply["recipients"] == [smoke_id]
+
+        smoke_msgs = bm.get_messages(agent_id=smoke_id)
+        assert len(smoke_msgs) == 1
+        assert smoke_msgs[0]["from"] == codex_id
+        assert smoke_msgs[0]["content"] == "hello claude"
+    finally:
+        done.touch()
+        proc.wait(timeout=5)
+
+    env = {**smoke_env, "HELIOY_BUS_DIR": str(isolated_bus)}
+    unreg = subprocess.run(
+        ["bash", str(UNREGISTER_HOOK)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unreg.returncode == 0, unreg.stderr
+
+    remaining = {a["agent_id"] for a in bm.list_agents()}
+    assert smoke_id not in remaining
+    assert codex_id not in remaining

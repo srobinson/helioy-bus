@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from unittest.mock import patch
 
 from server._tmux import gateway
@@ -166,6 +167,60 @@ def test_send_message_skips_codex_nudge(set_sender, monkeypatch):
         patch.object(gateway, "nudge") as mock_nudge,
     ):
         result = bm.send_message(to="codex", content="ping")
+    assert result["delivered"] is True
+    assert result["nudged"] is False
+    mock_alive.assert_not_called()
+    mock_nudge.assert_not_called()
+
+
+def test_send_message_skips_nudge_for_migrated_unknown_runtime(set_sender, monkeypatch):
+    import server._db as _db_mod
+    import server.bus_server as bm
+
+    monkeypatch.setattr(_db_mod, "_db_initialized", False)
+    conn = sqlite3.connect(str(_db_mod.REGISTRY_DB))
+    conn.executescript("""
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS agents (
+            agent_id      TEXT PRIMARY KEY,
+            cwd           TEXT NOT NULL,
+            tmux_target   TEXT NOT NULL DEFAULT '',
+            pid           INTEGER,
+            session_id    TEXT NOT NULL DEFAULT '',
+            agent_type    TEXT NOT NULL DEFAULT 'general',
+            registered_at TEXT NOT NULL,
+            last_seen     TEXT NOT NULL
+        );
+    """)
+    conn.execute(
+        "INSERT INTO agents (agent_id, cwd, tmux_target, pid, session_id, agent_type, "
+        "registered_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "legacy-codex",
+            "/tmp/codex",
+            "main:0.0",
+            1234,
+            "",
+            "general",
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:00:00+00:00",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    with _db_mod.db() as migrated:
+        row = migrated.execute(
+            "SELECT runtime FROM agents WHERE agent_id = 'legacy-codex'"
+        ).fetchone()
+        assert row["runtime"] == "unknown"
+
+    set_sender("sender")
+    with (
+        patch.object(gateway, "pane_alive") as mock_alive,
+        patch.object(gateway, "nudge") as mock_nudge,
+    ):
+        result = bm.send_message(to="legacy-codex", content="ping")
     assert result["delivered"] is True
     assert result["nudged"] is False
     mock_alive.assert_not_called()
