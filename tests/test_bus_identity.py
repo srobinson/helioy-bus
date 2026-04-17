@@ -133,6 +133,101 @@ def test_self_agent_id_last_resort_honors_agent_type_env(monkeypatch, tmp_path):
     assert _id_mod._self_agent_id() == "myrepo:backend-engineer"
 
 
+def test_self_agent_id_registry_lookup_by_tmux(monkeypatch, tmp_path):
+    """Registry path: when no PID file matches, look up the agent by the
+    caller's tmux_target. Covers runtimes (Codex) whose host PID is not
+    knowable at hook-run time, so the PID file can never be keyed to it."""
+    import server._identity as _id_mod
+    from server._db import db
+
+    # HELIOY_BUS_TMUX already carries the target; no need to shell out to tmux.
+    tmux_target = "6:1.2"
+    registered_id = "manicure:general:6:1.2"
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO agents
+                (agent_id, cwd, tmux_target, pid, session_id,
+                 agent_type, runtime, registered_at, last_seen)
+            VALUES (?, ?, ?, ?, '', 'general', 'codex', '2026-04-17', '2026-04-17')
+            """,
+            (registered_id, "/Users/alphab/Dev/LLM/DEV/helioy/manicure", tmux_target, 99999),
+        )
+    monkeypatch.delenv("HELIOY_BUS_CLAUDE_PID", raising=False)
+    monkeypatch.delenv("HELIOY_BUS_CODEX_PID", raising=False)
+    monkeypatch.setenv("HELIOY_BUS_TMUX", tmux_target)
+    # Disable the shell resolver so we prove the registry path wins,
+    # not a downstream fallback.
+    monkeypatch.setattr(
+        _id_mod, "_RESOLVE_IDENTITY_SH", tmp_path / "does-not-exist.sh"
+    )
+
+    assert _id_mod._self_agent_id() == registered_id
+
+
+def test_self_agent_id_registry_lookup_by_pid_ancestry(monkeypatch, tmp_path):
+    """Registry pid-ancestry tier: when the caller has no tmux env (Codex
+    strips env before spawning MCP subprocesses), walk up the process tree
+    and match ancestor pids against the agents table. This is the path
+    that carries Codex when the tmux_target tier silently misses."""
+    import server._identity as _id_mod
+    from server._db import db
+
+    registered_id = "manicure:general:6:1.2"
+    wrapper_pid = 77777
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO agents
+                (agent_id, cwd, tmux_target, pid, session_id,
+                 agent_type, runtime, registered_at, last_seen)
+            VALUES (?, ?, '6:1.2', ?, '', 'general', 'codex',
+                    '2026-04-17', '2026-04-17')
+            """,
+            (registered_id, "/Users/alphab/Dev/LLM/DEV/helioy/manicure", wrapper_pid),
+        )
+    monkeypatch.delenv("HELIOY_BUS_CLAUDE_PID", raising=False)
+    monkeypatch.delenv("HELIOY_BUS_CODEX_PID", raising=False)
+    monkeypatch.delenv("HELIOY_BUS_TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setattr(
+        _id_mod, "_RESOLVE_IDENTITY_SH", tmp_path / "does-not-exist.sh"
+    )
+
+    # Fake a three-hop ancestor chain: self → mcp parent → wrapper pid.
+    chain = {1000: 2000, 2000: 3000, 3000: wrapper_pid, wrapper_pid: 1}
+    monkeypatch.setattr(_id_mod.os, "getpid", lambda: 1000)
+    monkeypatch.setattr(_id_mod, "_parent_pid", lambda pid: chain.get(pid, 0))
+
+    assert _id_mod._self_agent_id() == registered_id
+
+
+def test_self_agent_id_registry_lookup_missing_falls_through(monkeypatch, tmp_path):
+    """Registry path is best-effort: a tmux_target with no matching row
+    falls through to the remaining tiers rather than short-circuiting."""
+    import server._identity as _id_mod
+
+    cwd = tmp_path / "orphan"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.delenv("HELIOY_BUS_CLAUDE_PID", raising=False)
+    monkeypatch.delenv("HELIOY_BUS_CODEX_PID", raising=False)
+    monkeypatch.setenv("HELIOY_BUS_TMUX", "9:9.9")
+    monkeypatch.setattr(
+        _id_mod, "_RESOLVE_IDENTITY_SH", tmp_path / "does-not-exist.sh"
+    )
+    # Short-circuit the pid-ancestry walk so a stray ancestor pid doesn't
+    # happen to match the test registry. Registry is empty here anyway,
+    # but stubbing keeps the test pure (no ps subprocess).
+    monkeypatch.setattr(_id_mod, "_parent_pid", lambda _pid: 0)
+
+    # Registry has no row for 9:9.9 and pid-ancestry is stubbed empty,
+    # so last-resort canonical form takes over and honors the tmux_target
+    # env rather than returning a bare basename.
+    assert _id_mod._self_agent_id() == "orphan:general:9:9.9"
+
+
 # ── Token tracking: whoami includes token_usage ──────────────────────────────
 
 
