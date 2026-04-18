@@ -76,7 +76,8 @@ def test_register_evicts_prior_pane_occupant():
         agent_id="helioy:general:8:1.1",
     )
 
-    agents = bm.list_agents()
+    with patch.object(gateway, "pane_alive", return_value=True):
+        agents = bm.list_agents()
     ids = [a["agent_id"] for a in agents]
     assert ids == ["helioy:general:8:1.1"], (
         f"Expected only the new occupant, got {ids}"
@@ -90,7 +91,8 @@ def test_register_does_not_evict_different_pane():
     bm.register_agent(pwd="/tmp/a", tmux_target="8:1.1", agent_id="a:8:1.1")
     bm.register_agent(pwd="/tmp/b", tmux_target="8:1.2", agent_id="b:8:1.2")
 
-    ids = sorted(a["agent_id"] for a in bm.list_agents())
+    with patch.object(gateway, "pane_alive", return_value=True):
+        ids = sorted(a["agent_id"] for a in bm.list_agents())
     assert ids == ["a:8:1.1", "b:8:1.2"]
 
 

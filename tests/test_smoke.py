@@ -59,7 +59,7 @@ def _install_tmux_stub(tmp_dir: Path) -> Path:
     stub_dir.mkdir()
     stub = stub_dir / "tmux"
     stub.write_text(
-        "#!/bin/sh\n"
+        "#!/bin/bash\n"
         "cmd=$1\n"
         "shift\n"
         "case \"$cmd\" in\n"
