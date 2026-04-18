@@ -59,7 +59,7 @@ class HotReloadProxy:
         self.server_script = server_script
         self.proc: asyncio.subprocess.Process | None = None
         self.init_line: bytes | None = None  # raw bytes of the initialize request
-        self.pending: list[bytes] = []       # messages buffered during restart
+        self.pending: list[bytes] = []  # messages buffered during restart
         self._restarting = False
 
     # ── Inner process lifecycle ────────────────────────────────────────────────
@@ -69,7 +69,8 @@ class HotReloadProxy:
 
         env = build_inner_env(os.environ, os.getppid())
         self.proc = await asyncio.create_subprocess_exec(
-            PYTHON, str(self.server_script),
+            PYTHON,
+            str(self.server_script),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=sys.stderr,
@@ -159,6 +160,7 @@ class HotReloadProxy:
 
     async def _watch(self) -> None:
         from watchfiles import awatch
+
         async for changes in awatch(str(WATCH_DIR)):
             if any(p.endswith(".py") for _, p in changes):
                 await self._restart()

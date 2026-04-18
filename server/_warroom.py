@@ -57,9 +57,7 @@ def _scan_agent_types(runtime_id: str | None = None) -> list[dict]:
     return fresh
 
 
-def _resolve_agent_type(
-    name: str, runtime_id: str | None = None
-) -> dict | None:
+def _resolve_agent_type(name: str, runtime_id: str | None = None) -> dict | None:
     """Resolve a short or qualified agent type name to its definition.
 
     ``runtime_id`` follows the same semantics as :func:`_scan_agent_types`:

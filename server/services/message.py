@@ -48,8 +48,7 @@ def _nudge_allowed(agent_id: str) -> bool:
     """
     with _db.db() as conn:
         row = conn.execute(
-            "SELECT nudged_at FROM nudge_log WHERE agent_id = ? "
-            "ORDER BY nudged_at DESC LIMIT 1",
+            "SELECT nudged_at FROM nudge_log WHERE agent_id = ? ORDER BY nudged_at DESC LIMIT 1",
             (agent_id,),
         ).fetchone()
         if row is None:
@@ -106,7 +105,7 @@ def _resolve_recipients(conn, *, sender_id: str, to: str) -> tuple[list[dict], d
         ).fetchall()
         return [dict(r) for r in rows], None
     if to.startswith("role:"):
-        role = to[len("role:"):]
+        role = to[len("role:") :]
         rows = conn.execute(
             "SELECT agent_id, tmux_target, runtime FROM agents "
             "WHERE agent_type = ? AND agent_id != ?",
@@ -184,9 +183,7 @@ def send(
         inbox.mkdir(parents=True, exist_ok=True)
 
         filename = f"{now.replace(':', '-')}_{message_id[:8]}.json"
-        _db._dbg(
-            f"send_message: delivering to={target_id!r} inbox={inbox} file={filename}"
-        )
+        _db._dbg(f"send_message: delivering to={target_id!r} inbox={inbox} file={filename}")
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(inbox), suffix=".tmp")
         try:
             with os.fdopen(tmp_fd, "w") as f:
@@ -227,8 +224,7 @@ def read(*, agent_id: str, topic: str = "") -> list[dict]:
     """
     inbox = _db.INBOX_DIR / agent_id
     _db._dbg(
-        f"get_messages: agent_id={agent_id!r} topic={topic!r} "
-        f"inbox={inbox} exists={inbox.exists()}"
+        f"get_messages: agent_id={agent_id!r} topic={topic!r} inbox={inbox} exists={inbox.exists()}"
     )
 
     if not inbox.exists():
@@ -239,9 +235,7 @@ def read(*, agent_id: str, topic: str = "") -> list[dict]:
     archive.mkdir(parents=True, exist_ok=True)
 
     msg_files = sorted(inbox.glob("*.json"))
-    _db._dbg(
-        f"get_messages: found {len(msg_files)} file(s): {[p.name for p in msg_files]}"
-    )
+    _db._dbg(f"get_messages: found {len(msg_files)} file(s): {[p.name for p in msg_files]}")
     messages: list[dict] = []
 
     for path in msg_files:

@@ -31,8 +31,11 @@ from server.runtimes import (
 )
 
 VALID_LAYOUTS = {
-    "tiled", "even-horizontal", "even-vertical",
-    "main-horizontal", "main-vertical",
+    "tiled",
+    "even-horizontal",
+    "even-vertical",
+    "main-horizontal",
+    "main-vertical",
 }
 
 WARROOM_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,29}$")
@@ -49,9 +52,7 @@ _MESSAGING_INSTRUCTION = (
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 
-def kill_warrooms(
-    conn: sqlite3.Connection, name: str, kill_all: bool
-) -> list[str]:
+def kill_warrooms(conn: sqlite3.Connection, name: str, kill_all: bool) -> list[str]:
     """Kill warrooms and remove their DB records using an existing connection.
 
     Kills the tmux window for each matching warroom (if still alive)
@@ -62,13 +63,11 @@ def kill_warrooms(
     """
     if kill_all:
         rows = conn.execute(
-            "SELECT warroom_id, tmux_session, tmux_window FROM warrooms "
-            "WHERE status = 'active'"
+            "SELECT warroom_id, tmux_session, tmux_window FROM warrooms WHERE status = 'active'"
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT warroom_id, tmux_session, tmux_window FROM warrooms "
-            "WHERE warroom_id = ?",
+            "SELECT warroom_id, tmux_session, tmux_window FROM warrooms WHERE warroom_id = ?",
             (name,),
         ).fetchall()
 
@@ -85,7 +84,8 @@ def kill_warrooms(
 def _build_suggestions(needle: str, all_types: list[dict], limit: int = 5) -> list[str]:
     q = needle.lower()
     return [
-        a["qualified_name"] for a in all_types
+        a["qualified_name"]
+        for a in all_types
         if q in a["name"].lower() or q in a.get("summary", "").lower()
     ][:limit]
 
@@ -172,8 +172,7 @@ def discover(
     if query:
         q = query.lower()
         filtered = [
-            a for a in filtered
-            if q in a["name"].lower() or q in a.get("summary", "").lower()
+            a for a in filtered if q in a["name"].lower() or q in a.get("summary", "").lower()
         ]
 
     return {
@@ -291,7 +290,7 @@ def spawn(
     if not name or not WARROOM_NAME_RE.match(name):
         return {
             "error": "Name must be 1-30 chars, alphanumeric and hyphens, "
-                     "starting with alphanumeric."
+            "starting with alphanumeric."
         }
     if not agents:
         return {"error": "At least one agent type is required."}
@@ -322,11 +321,13 @@ def spawn(
     for agent_name in agents:
         agent_def = _resolve_agent_type(agent_name, runtime_id)
         if agent_def is None:
-            errors.append({
-                "agent": agent_name,
-                "error": "Unknown agent type",
-                "suggestions": _build_suggestions(agent_name, all_types),
-            })
+            errors.append(
+                {
+                    "agent": agent_name,
+                    "error": "Unknown agent type",
+                    "suggestions": _build_suggestions(agent_name, all_types),
+                }
+            )
         else:
             resolved.append(agent_def)
 
@@ -354,10 +355,12 @@ def spawn(
             )
             members.append(pane_info)
         except RuntimeError as e:
-            spawn_errors.append({
-                "agent_type": agent_def["qualified_name"],
-                "error": str(e),
-            })
+            spawn_errors.append(
+                {
+                    "agent_type": agent_def["qualified_name"],
+                    "error": str(e),
+                }
+            )
 
     with _db.db() as conn:
         upsert_warroom(
@@ -430,9 +433,7 @@ def status(*, name: str = "") -> list[dict]:
                 "SELECT * FROM warrooms WHERE warroom_id = ?", (name,)
             ).fetchall()
         else:
-            warrooms = conn.execute(
-                "SELECT * FROM warrooms WHERE status = 'active'"
-            ).fetchall()
+            warrooms = conn.execute("SELECT * FROM warrooms WHERE status = 'active'").fetchall()
 
         result = []
         for wr in warrooms:
@@ -464,36 +465,40 @@ def status(*, name: str = "") -> list[dict]:
                     with contextlib.suppress(json.JSONDecodeError, TypeError):
                         token_usage = json.loads(token_usage_raw)
 
-                members.append({
-                    "warroom_member_id": m["warroom_member_id"],
-                    "desired_runtime": m["desired_runtime"],
-                    "desired_role": m["desired_role"],
-                    "desired_repo": m["desired_repo"],
-                    "state": state,
-                    "agent_instance_id": agent_instance_id,
-                    "spawn_order": m["spawn_order"],
-                    "agent_type": m["desired_role"],
-                    "tmux_target": tmux_target,
-                    "pane_id": m["pane_id"],
-                    "registered": registered,
-                    "pane_alive": pane_alive,
-                    "created_at": m["created_at"],
-                    "updated_at": m["updated_at"],
-                    "token_usage": token_usage,
-                })
+                members.append(
+                    {
+                        "warroom_member_id": m["warroom_member_id"],
+                        "desired_runtime": m["desired_runtime"],
+                        "desired_role": m["desired_role"],
+                        "desired_repo": m["desired_repo"],
+                        "state": state,
+                        "agent_instance_id": agent_instance_id,
+                        "spawn_order": m["spawn_order"],
+                        "agent_type": m["desired_role"],
+                        "tmux_target": tmux_target,
+                        "pane_id": m["pane_id"],
+                        "registered": registered,
+                        "pane_alive": pane_alive,
+                        "created_at": m["created_at"],
+                        "updated_at": m["updated_at"],
+                        "token_usage": token_usage,
+                    }
+                )
 
-            result.append({
-                "warroom_id": wid,
-                "tmux_session": wr["tmux_session"],
-                "tmux_window": wr["tmux_window"],
-                "cwd": wr["cwd"],
-                "layout": wr["layout"],
-                "runtime_policy": wr["runtime_policy"],
-                "metadata": wr["metadata"],
-                "status": wr["status"],
-                "created_at": wr["created_at"],
-                "members": members,
-            })
+            result.append(
+                {
+                    "warroom_id": wid,
+                    "tmux_session": wr["tmux_session"],
+                    "tmux_window": wr["tmux_window"],
+                    "cwd": wr["cwd"],
+                    "layout": wr["layout"],
+                    "runtime_policy": wr["runtime_policy"],
+                    "metadata": wr["metadata"],
+                    "status": wr["status"],
+                    "created_at": wr["created_at"],
+                    "members": members,
+                }
+            )
 
     return result
 
@@ -526,8 +531,7 @@ def add(*, name: str, agent: str, cwd: str = "", runtime: str = "") -> dict:
             return {"error": f"No active warroom '{name}'."}
 
         next_order = conn.execute(
-            "SELECT COALESCE(MAX(spawn_order), -1) + 1 FROM warroom_members "
-            "WHERE warroom_id = ?",
+            "SELECT COALESCE(MAX(spawn_order), -1) + 1 FROM warroom_members WHERE warroom_id = ?",
             (name,),
         ).fetchone()[0]
 
@@ -584,26 +588,20 @@ def remove(*, name: str, agent: str = "", member_id: str = "") -> dict:
     with _db.db() as conn:
         if member_id:
             member = conn.execute(
-                "SELECT * FROM warroom_members "
-                "WHERE warroom_member_id = ? AND warroom_id = ?",
+                "SELECT * FROM warroom_members WHERE warroom_member_id = ? AND warroom_id = ?",
                 (member_id, name),
             ).fetchone()
             if not member:
                 return {"error": f"No member '{member_id}' in warroom '{name}'."}
         else:
             members = conn.execute(
-                "SELECT * FROM warroom_members "
-                "WHERE warroom_id = ? "
-                "ORDER BY spawn_order",
+                "SELECT * FROM warroom_members WHERE warroom_id = ? ORDER BY spawn_order",
                 (name,),
             ).fetchall()
             if ":" in agent:
                 matches = [m for m in members if m["desired_role"] == agent]
             else:
-                matches = [
-                    m for m in members
-                    if _short_role_name(m["desired_role"]) == agent
-                ]
+                matches = [m for m in members if _short_role_name(m["desired_role"]) == agent]
             if not matches:
                 return {"error": f"No member with role '{agent}' in warroom '{name}'."}
             if len(matches) > 1:
@@ -665,12 +663,14 @@ def list_presets() -> dict:
     for path in sorted(_db.PRESETS_DIR.glob("*.json")):
         try:
             data = json.loads(path.read_text())
-            presets.append({
-                "name": data.get("name", path.stem),
-                "description": data.get("description", ""),
-                "agents": data.get("agents", []),
-                "tags": data.get("tags", []),
-            })
+            presets.append(
+                {
+                    "name": data.get("name", path.stem),
+                    "description": data.get("description", ""),
+                    "agents": data.get("agents", []),
+                    "tags": data.get("tags", []),
+                }
+            )
         except (json.JSONDecodeError, OSError):
             continue
 
@@ -687,7 +687,7 @@ def save_preset(
     if not name or not PRESET_NAME_RE.match(name):
         return {
             "error": "Name must be 1-50 chars, alphanumeric and hyphens, "
-                     "starting with alphanumeric."
+            "starting with alphanumeric."
         }
     if not agents:
         return {"error": "At least one agent type is required."}

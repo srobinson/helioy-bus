@@ -131,10 +131,7 @@ def _migrate_warroom_members(conn: sqlite3.Connection) -> None:
     and updated_at. SQLite cannot rename multiple columns or drop NOT NULL
     constraints in place, so we copy via a legacy-named temp table.
     """
-    cols = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(warroom_members)").fetchall()
-    }
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(warroom_members)").fetchall()}
     if not cols or "desired_role" in cols:
         return
 

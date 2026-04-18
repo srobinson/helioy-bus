@@ -26,12 +26,10 @@ def prune_dead_agents() -> set[str]:
             "SELECT agent_id, tmux_target FROM agents WHERE tmux_target != ''"
         ).fetchall()
         dead_ids: set[str] = {
-            r["agent_id"] for r in alive_rows
-            if not gateway.pane_alive(r["tmux_target"])
+            r["agent_id"] for r in alive_rows if not gateway.pane_alive(r["tmux_target"])
         }
         no_tmux_rows = conn.execute(
-            "SELECT agent_id, pid FROM agents "
-            "WHERE tmux_target = '' AND pid IS NOT NULL"
+            "SELECT agent_id, pid FROM agents WHERE tmux_target = '' AND pid IS NOT NULL"
         ).fetchall()
         for r in no_tmux_rows:
             try:
@@ -112,10 +110,7 @@ def backfill_warroom_member_agent_ids(warroom_id: str = "") -> int:
             live_agent_id = r["registered_agent_id"] if pane_alive else None
             desired_state = "active" if live_agent_id else "pending"
 
-            if (
-                r["agent_instance_id"] == live_agent_id
-                and r["state"] == desired_state
-            ):
+            if r["agent_instance_id"] == live_agent_id and r["state"] == desired_state:
                 continue
 
             conn.execute(

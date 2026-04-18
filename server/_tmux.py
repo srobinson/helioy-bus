@@ -29,9 +29,7 @@ class TmuxGateway:
     lists themselves.
     """
 
-    def __init__(
-        self, tmux_binary: str = "tmux", default_timeout: float = 5.0
-    ) -> None:
+    def __init__(self, tmux_binary: str = "tmux", default_timeout: float = 5.0) -> None:
         self._tmux = tmux_binary
         self._default_timeout = default_timeout
 
@@ -90,13 +88,9 @@ class TmuxGateway:
         # would also match 'engineering' and kill an unrelated window.
         return self._run_silent("kill-window", "-t", f"{session}:={window}")
 
-    def select_layout(
-        self, session: str, window: str, layout: str = "tiled"
-    ) -> bool:
+    def select_layout(self, session: str, window: str, layout: str = "tiled") -> bool:
         """Reflow a window's panes with the named layout. Best-effort."""
-        return self._run_silent(
-            "select-layout", "-t", f"{session}:{window}", layout
-        )
+        return self._run_silent("select-layout", "-t", f"{session}:{window}", layout)
 
     # --- nudging ---
 
@@ -114,30 +108,26 @@ class TmuxGateway:
         del runtime  # retained for call-site compatibility
         try:
             mode = self._run(
-                "display-message", "-t", tmux_target, "-p", "#{pane_in_mode}",
+                "display-message",
+                "-t",
+                tmux_target,
+                "-p",
+                "#{pane_in_mode}",
                 timeout=3,
             )
         except RuntimeError as err:
             _db._dbg(f"nudge: target={tmux_target!r} mode-check failed: {err}")
             return False
         if mode == "1":
-            self._run_silent(
-                "send-keys", "-t", tmux_target, "-X", "cancel", timeout=3
-            )
+            self._run_silent("send-keys", "-t", tmux_target, "-X", "cancel", timeout=3)
             _db._dbg(f"nudge: exited copy-mode on {tmux_target!r}")
-        if not self._run_silent(
-            "send-keys", "-t", tmux_target, "-l", "you have mail!", timeout=3
-        ):
+        if not self._run_silent("send-keys", "-t", tmux_target, "-l", "you have mail!", timeout=3):
             _db._dbg(f"nudge: target={tmux_target!r} text send failed")
             return False
-        if not self._run_silent(
-            "send-keys", "-t", tmux_target, "-H", "0d", timeout=3
-        ):
+        if not self._run_silent("send-keys", "-t", tmux_target, "-H", "0d", timeout=3):
             _db._dbg(f"nudge: target={tmux_target!r} prime (0d) failed")
             return False
-        ok = self._run_silent(
-            "send-keys", "-t", tmux_target, "Enter", timeout=3
-        )
+        ok = self._run_silent("send-keys", "-t", tmux_target, "Enter", timeout=3)
         _db._dbg(f"nudge: target={tmux_target!r} delivered={ok}")
         return ok
 
@@ -173,18 +163,36 @@ class TmuxGateway:
             # -a appends after current window, avoiding index collisions.
             # Trailing colon on session ensures tmux targets the session.
             pane_id = self._run(
-                "new-window", "-a", "-t", f"{session}:", "-n", window,
-                "-c", cwd, "-P", "-F", "#{pane_id}",
+                "new-window",
+                "-a",
+                "-t",
+                f"{session}:",
+                "-n",
+                window,
+                "-c",
+                cwd,
+                "-P",
+                "-F",
+                "#{pane_id}",
             )
         else:
             pane_id = self._run(
-                "split-window", "-t", f"{session}:{window}",
-                "-c", cwd, "-P", "-F", "#{pane_id}",
+                "split-window",
+                "-t",
+                f"{session}:{window}",
+                "-c",
+                cwd,
+                "-P",
+                "-F",
+                "#{pane_id}",
             )
 
         tmux_target = self._run(
-            "display-message", "-t", pane_id,
-            "-p", "#{session_name}:#{window_index}.#{pane_index}",
+            "display-message",
+            "-t",
+            pane_id,
+            "-p",
+            "#{session_name}:#{window_index}.#{pane_index}",
         )
 
         # Pane title must be set BEFORE launching the runtime: the
@@ -195,8 +203,11 @@ class TmuxGateway:
 
         if is_first:
             self._run(
-                "set-option", "-t", f"{session}:{window}",
-                "allow-rename", "off",
+                "set-option",
+                "-t",
+                f"{session}:{window}",
+                "allow-rename",
+                "off",
             )
 
         adapter = for_id(runtime) if runtime else default_adapter()

@@ -47,8 +47,9 @@ def main() -> None:
             print(f"error: {result['error']}", file=sys.stderr)
             sys.exit(1)
         members = result.get("members", [])
-        repos = [os.path.basename(m.get("tmux_target", "").rsplit(":", 1)[0] or "?")
-                 for m in members]
+        repos = [
+            os.path.basename(m.get("tmux_target", "").rsplit(":", 1)[0] or "?") for m in members
+        ]
         print(f"warroom ready: {len(members)} agents ({' '.join(repos)})")
         return
 

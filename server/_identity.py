@@ -114,9 +114,7 @@ def _self_agent_id() -> str:
     if tmux_target:
         resolved = _lookup_agent_by_tmux(tmux_target)
         if resolved:
-            _db._dbg(
-                f"_self_agent_id: registry tmux_target={tmux_target} \u2192 {resolved!r}"
-            )
+            _db._dbg(f"_self_agent_id: registry tmux_target={tmux_target} \u2192 {resolved!r}")
             return resolved
 
     resolved = _lookup_agent_by_pid_ancestry(os.getpid())
@@ -129,7 +127,8 @@ def _self_agent_id() -> str:
         try:
             result = subprocess.run(
                 [
-                    "bash", "-c",
+                    "bash",
+                    "-c",
                     f"source {_RESOLVE_IDENTITY_SH} && resolve_agent_id"
                     " && printf '%s' \"$HELIOY_AGENT_ID\"",
                 ],
@@ -146,9 +145,7 @@ def _self_agent_id() -> str:
 
     # Last resort: canonical form from env + cwd. Never bare basename.
     agent_type = (
-        os.environ.get("HELIOY_AGENT_TYPE")
-        or os.environ.get("HELIOY_BUS_AGENT_TYPE")
-        or "general"
+        os.environ.get("HELIOY_AGENT_TYPE") or os.environ.get("HELIOY_BUS_AGENT_TYPE") or "general"
     )
     tmux_target = os.environ.get("HELIOY_BUS_TMUX", "")
     resolved = canonical_agent_id(os.getcwd(), agent_type, tmux_target)
@@ -177,7 +174,11 @@ def _resolve_tmux_target() -> str:
     try:
         result = subprocess.run(
             [
-                "tmux", "display-message", "-p", "-t", pane,
+                "tmux",
+                "display-message",
+                "-p",
+                "-t",
+                pane,
                 "#{session_name}:#{window_index}.#{pane_index}",
             ],
             capture_output=True,

@@ -50,9 +50,7 @@ def warroom_discover(
     Returns:
         {agents: [...], total: int, namespaces: [...], runtimes: [...]}
     """
-    return warroom.discover(
-        query=query, namespace=namespace, limit=limit, runtime=runtime
-    )
+    return warroom.discover(query=query, namespace=namespace, limit=limit, runtime=runtime)
 
 
 @mcp.tool()
@@ -130,9 +128,7 @@ def warroom_spawn(
           errors?: [...]
         }
     """
-    return warroom.spawn(
-        name=name, agents=agents, cwd=cwd, layout=layout, runtime=runtime
-    )
+    return warroom.spawn(name=name, agents=agents, cwd=cwd, layout=layout, runtime=runtime)
 
 
 @mcp.tool()
@@ -275,9 +271,7 @@ def warroom_save_preset(
     Returns:
         {saved: name, path: str}
     """
-    return warroom.save_preset(
-        name=name, agents=agents, description=description, tags=tags
-    )
+    return warroom.save_preset(name=name, agents=agents, description=description, tags=tags)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

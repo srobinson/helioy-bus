@@ -74,8 +74,18 @@ def register(
                  runtime, profile, registered_at, last_seen)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (agent_id, pwd, tmux_target, parent_pid, session_id, agent_type,
-             runtime, profile_json, now, now),
+            (
+                agent_id,
+                pwd,
+                tmux_target,
+                parent_pid,
+                session_id,
+                agent_type,
+                runtime,
+                profile_json,
+                now,
+                now,
+            ),
         )
 
     inbox = _db.INBOX_DIR / agent_id
@@ -95,14 +105,11 @@ def list_active(*, tmux_filter: str = "") -> list[dict]:
         if tmux_filter:
             sql_prefix = tmux_filter + ("." if ":" in tmux_filter else ":") + "%"
             rows = conn.execute(
-                "SELECT * FROM agents WHERE tmux_target LIKE ? "
-                "ORDER BY registered_at ASC",
+                "SELECT * FROM agents WHERE tmux_target LIKE ? ORDER BY registered_at ASC",
                 (sql_prefix,),
             ).fetchall()
         else:
-            rows = conn.execute(
-                "SELECT * FROM agents ORDER BY registered_at ASC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM agents ORDER BY registered_at ASC").fetchall()
 
     result = []
     for row in rows:

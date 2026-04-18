@@ -72,8 +72,18 @@ def insert_warroom_member(
             desired_repo, state, agent_instance_id, spawn_order,
             tmux_target, pane_id, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, ?, ?)""",
-        (member_id, warroom_id, runtime_id, desired_role, desired_repo,
-         spawn_order, tmux_target, pane_id, now, now),
+        (
+            member_id,
+            warroom_id,
+            runtime_id,
+            desired_role,
+            desired_repo,
+            spawn_order,
+            tmux_target,
+            pane_id,
+            now,
+            now,
+        ),
     )
     return member_id
 
