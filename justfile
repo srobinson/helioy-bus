@@ -9,8 +9,14 @@ default:
 build:
     uv sync
 
-# Lint and type-check
+# Fix formatting and auto-fixable lint issues
+fmt:
+    uv run ruff format {{ server_dir }}/
+    uv run ruff check {{ server_dir }}/ --fix
+
+# Verify: format, lint, types, shellcheck, tests (no mutations)
 check:
+    uv run ruff format {{ server_dir }}/ --check
     uv run ruff check {{ server_dir }}/
     uv run mypy {{ server_dir }}/ --explicit-package-bases --ignore-missing-imports
     @if command -v shellcheck >/dev/null 2>&1; then \
@@ -18,23 +24,15 @@ check:
     else \
         echo "shellcheck not installed, skipping hook lint (brew install shellcheck)"; \
     fi
-
-# Auto-fix lint issues
-fmt:
-    uv run ruff check {{ server_dir }}/ --fix
-    uv run ruff format {{ server_dir }}/
-
-# Run tests
-test:
     uv run pytest tests/ -v
 
-# Lint, type-check, and test
-ci: check test
-    @echo "All CI checks passed"
+# Run tests only
+test:
+    uv run pytest tests/ -v
 
 # Run the MCP server directly (for manual testing)
 run:
     uv run python {{ server_dir }}/bus_server.py
 
-# Preflight: build + check + test
-preflight: build check test
+# Preflight: build + check
+preflight: build check

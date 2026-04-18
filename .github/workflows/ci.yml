@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "NOTES"
+      - "TLDR.md"
+      - "SPEC.md"
+      - "LICENSE"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "NOTES"
+      - "TLDR.md"
+      - "SPEC.md"
+      - "LICENSE"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: ${{ matrix.python-version }}
+
+      - run: uv sync --frozen
+
+      - uses: extractions/setup-just@v2
+
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - run: just check
