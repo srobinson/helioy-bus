@@ -43,7 +43,7 @@ No central daemon. Every Claude Code instance spawns its own bus process. They c
 server/           Python MCP servers, shared modules
 plugin/hooks/     Claude Code lifecycle hooks (register, unregister, mail check)
 plugin/scripts/   Legacy warroom shell script
-tests/            79 test functions across bus and warroom
+tests/            Pytest and shell-harness coverage across bus and warroom
 ```
 
 ## Running

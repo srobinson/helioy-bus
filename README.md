@@ -37,6 +37,7 @@ The proxy provides hot-reload during development. For production, point directly
 
 | Tool | Purpose |
 |------|---------|
+| `whoami` | Return the caller's identity record from the registry |
 | `register_agent` | Register a runtime instance on the bus |
 | `unregister_agent` | Remove an agent from the registry |
 | `list_agents` | List registered agents with optional tmux session/window filtering |
@@ -96,13 +97,6 @@ Examples:
 - `helioy-bus:backend-engineer:main:3.1` (role-mode)
 
 This title is the source of truth for agent identity. The Claude hooks read it at SessionStart, and the Codex wrapper uses the same identity convention.
-
-## Debug Scripts
-
-```bash
-python scripts/agents.py    # dump the agent registry
-python scripts/inboxes.py   # show inbox message counts
-```
 
 ## Development
 

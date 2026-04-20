@@ -62,6 +62,7 @@ plugin/
     check-mail.sh        # PreToolUse/UserPromptSubmit: summarizes unread mail without draining inbox
     stop-check-mail.sh   # Stop: halts mail checking
     token-capture.sh     # PreToolUse: captures token usage from tmux status line
+    codex-launch.sh      # Launch wrapper: registers Codex sessions on the bus before exec
     lib/
       resolve-identity.sh  # Authoritative identity resolver (shared by hooks)
   scripts/
@@ -74,6 +75,7 @@ tests/
   test_bus_lifecycle_and_db.py        # Init, migration, registration lifecycle
   test_bus_mailbox.py                 # Inbox delivery, archive, TTL
   test_bus_registry.py                # Agent registry operations
+  test_resolve_identity.sh            # Shell harness for resolve-identity.sh
   test_runtime_adapters.py            # Runtime adapter protocol conformance
   test_runtime_discovery.py           # Runtime-aware agent type discovery
   test_schema_migration.py            # Legacy warroom_members shim
@@ -268,9 +270,12 @@ just build                 # uv sync
 just test                  # pytest
 ```
 
-No GitHub Actions workflow is checked in. The current local gate is the `just`
-surface: `just check` for lint, hook lint, and Python type-checking across
-`server/`, plus `just test` for pytest coverage.
+CI runs via `.github/workflows/ci.yml` on pushes to `main` and all pull
+requests (docs-only paths are excluded). The job installs `uv`, syncs the
+frozen lockfile, installs `just` and `shellcheck`, and runs `just check`
+across a Python 3.12 and 3.13 matrix. The local gate mirrors this: `just
+check` for lint, hook lint, and Python type-checking across `server/`, plus
+`just test` for pytest coverage.
 
 ## Design Notes
 
