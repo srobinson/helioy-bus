@@ -12,6 +12,24 @@ from server._tmux import gateway
 from tests.conftest import _insert_member
 
 
+def _stub_deferred_launch(monkeypatch, targets: dict[str, str]) -> None:
+    """Make warroom_add's deferred launch path deterministic in unit tests."""
+    monkeypatch.setattr(gateway, "target_for_pane", lambda pane_id: targets[pane_id], raising=False)
+    monkeypatch.setattr(gateway, "set_pane_title", lambda pane_id, title: None, raising=False)
+    monkeypatch.setattr(
+        gateway,
+        "launch_pane",
+        lambda **kw: {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": kw["tmux_target"],
+            "pane_id": kw["pane_id"],
+            "runtime": kw["runtime"],
+        },
+        raising=False,
+    )
+
+
 # ── Warroom: warroom_kill ────────────────────────────────────────────────────
 
 
@@ -286,6 +304,7 @@ def test_warroom_add_to_existing(fake_plugins, monkeypatch):
         "tmux_target": "main:1.1",
         "pane_id": "%11",
     })
+    _stub_deferred_launch(monkeypatch, {"%10": "main:1.0", "%11": "main:1.1"})
 
     result = wm.warroom_add(name="add-test", agent="frontend-engineer")
     assert result["warroom_id"] == "add-test"
@@ -327,10 +346,483 @@ def test_warroom_add_preserves_stored_layout(fake_plugins, monkeypatch):
         }
 
     monkeypatch.setattr(gateway, "spawn_pane", mock_spawn_pane)
+    _stub_deferred_launch(monkeypatch, {"%10": "main:1.0", "%11": "main:1.1"})
 
     result = wm.warroom_add(name="layout-add", agent="frontend-engineer")
     assert "error" not in result
     assert seen_layouts == ["even-horizontal"]
+
+
+def test_warroom_add_rekeys_existing_members_before_new_runtime_registers(
+    fake_plugins, isolated_bus, monkeypatch
+):
+    """Existing pane indexes can shift when tmux reflows after a split."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    old_agent_id = "project:helioy-tools:backend-engineer:main:2.2"
+    new_agent_id = "project:helioy-tools:backend-engineer:main:2.3"
+    pids = isolated_bus / "pids"
+    pids.mkdir()
+    (pids / "4242").write_text(old_agent_id)
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms "
+            "(warroom_id, tmux_session, tmux_window, cwd, layout, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("rekey-add", "main", "rekey-add", "/tmp/project", "tiled", now, "active"),
+        )
+        member_id = _insert_member(
+            conn,
+            warroom_id="rekey-add",
+            role="helioy-tools:backend-engineer",
+            tmux_target="main:2.2",
+            pane_id="%640",
+            now=now,
+            state="active",
+            agent_instance_id=old_agent_id,
+        )
+        conn.execute(
+            "INSERT INTO agents "
+            "(agent_id, cwd, tmux_target, pid, session_id, agent_type, runtime, "
+            " registered_at, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                old_agent_id,
+                "/tmp/project",
+                "main:2.2",
+                4242,
+                "session-a",
+                "helioy-tools:backend-engineer",
+                "claude",
+                now,
+                now,
+            ),
+        )
+
+    spawn_calls = []
+    launch_calls = []
+    titles = []
+
+    def mock_spawn_pane(**kw):
+        spawn_calls.append(kw)
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": "main:2.2",
+            "pane_id": "%641",
+            "runtime": "claude",
+        }
+
+    monkeypatch.setattr(gateway, "spawn_pane", mock_spawn_pane)
+    monkeypatch.setattr(gateway, "target_for_pane", lambda pane_id: {
+        "%640": "main:2.3",
+        "%641": "main:2.2",
+    }[pane_id], raising=False)
+    monkeypatch.setattr(
+        gateway,
+        "set_pane_title",
+        lambda pane_id, title: titles.append((pane_id, title)),
+        raising=False,
+    )
+
+    def mock_launch_pane(**kw):
+        launch_calls.append(kw)
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": kw["tmux_target"],
+            "pane_id": kw["pane_id"],
+            "runtime": "claude",
+        }
+
+    monkeypatch.setattr(gateway, "launch_pane", mock_launch_pane, raising=False)
+
+    result = wm.warroom_add(name="rekey-add", agent="frontend-engineer")
+
+    assert "error" not in result
+    assert spawn_calls[0]["launch"] is False
+    assert launch_calls[0]["pane_id"] == "%641"
+    assert launch_calls[0]["tmux_target"] == "main:2.2"
+    assert ("%640", new_agent_id) in titles
+
+    with db() as conn:
+        existing = conn.execute(
+            "SELECT tmux_target, agent_instance_id, state FROM warroom_members "
+            "WHERE warroom_member_id = ?",
+            (member_id,),
+        ).fetchone()
+        assert existing["tmux_target"] == "main:2.3"
+        assert existing["agent_instance_id"] == new_agent_id
+        assert existing["state"] == "active"
+
+        old_row = conn.execute(
+            "SELECT * FROM agents WHERE agent_id = ?",
+            (old_agent_id,),
+        ).fetchone()
+        assert old_row is None
+
+        new_row = conn.execute(
+            "SELECT agent_id, tmux_target, pid, session_id, agent_type FROM agents "
+            "WHERE agent_id = ?",
+            (new_agent_id,),
+        ).fetchone()
+        assert dict(new_row) == {
+            "agent_id": new_agent_id,
+            "tmux_target": "main:2.3",
+            "pid": 4242,
+            "session_id": "session-a",
+            "agent_type": "helioy-tools:backend-engineer",
+        }
+
+    assert (pids / "4242").read_text() == new_agent_id
+
+
+def test_warroom_add_rekeys_duplicate_role_members_without_losing_registry_rows(
+    fake_plugins, isolated_bus, monkeypatch
+):
+    """Same-role source/destination ids can overlap during tmux reflow."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    role = "helioy-tools:backend-engineer"
+    pids = isolated_bus / "pids"
+    pids.mkdir()
+    (pids / "1111").write_text(f"project:{role}:main:1.1")
+    (pids / "2222").write_text(f"project:{role}:main:1.2")
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms "
+            "(warroom_id, tmux_session, tmux_window, cwd, layout, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("dup-rekey", "main", "dup-rekey", "/tmp/project", "tiled", now, "active"),
+        )
+        first_id = _insert_member(
+            conn,
+            warroom_id="dup-rekey",
+            role=role,
+            tmux_target="main:1.1",
+            pane_id="%1",
+            now=now,
+            spawn_order=0,
+            state="active",
+            agent_instance_id=f"project:{role}:main:1.1",
+        )
+        second_id = _insert_member(
+            conn,
+            warroom_id="dup-rekey",
+            role=role,
+            tmux_target="main:1.2",
+            pane_id="%2",
+            now=now,
+            spawn_order=1,
+            state="active",
+            agent_instance_id=f"project:{role}:main:1.2",
+        )
+        for pid, target in [(1111, "main:1.1"), (2222, "main:1.2")]:
+            conn.execute(
+                "INSERT INTO agents "
+                "(agent_id, cwd, tmux_target, pid, session_id, agent_type, runtime, "
+                " registered_at, last_seen) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"project:{role}:{target}",
+                    "/tmp/project",
+                    target,
+                    pid,
+                    f"session-{pid}",
+                    role,
+                    "claude",
+                    now,
+                    now,
+                ),
+            )
+
+    monkeypatch.setattr(gateway, "spawn_pane", lambda **kw: {
+        "agent_type": kw["agent_type"],
+        "qualified_name": kw["qualified_name"],
+        "tmux_target": "main:1.3",
+        "pane_id": "%3",
+        "runtime": "claude",
+    })
+    _stub_deferred_launch(
+        monkeypatch,
+        {
+            "%1": "main:1.2",
+            "%2": "main:1.3",
+            "%3": "main:1.1",
+        },
+    )
+
+    result = wm.warroom_add(name="dup-rekey", agent="frontend-engineer")
+
+    assert "error" not in result
+    with db() as conn:
+        members = conn.execute(
+            "SELECT warroom_member_id, tmux_target, agent_instance_id, state "
+            "FROM warroom_members WHERE warroom_member_id IN (?, ?) "
+            "ORDER BY spawn_order",
+            (first_id, second_id),
+        ).fetchall()
+        assert [m["tmux_target"] for m in members] == ["main:1.2", "main:1.3"]
+        assert [m["agent_instance_id"] for m in members] == [
+            f"project:{role}:main:1.2",
+            f"project:{role}:main:1.3",
+        ]
+        assert [m["state"] for m in members] == ["active", "active"]
+
+        agents = conn.execute(
+            "SELECT agent_id, tmux_target, pid, session_id FROM agents "
+            "WHERE agent_type = ? ORDER BY tmux_target",
+            (role,),
+        ).fetchall()
+        assert [dict(a) for a in agents] == [
+            {
+                "agent_id": f"project:{role}:main:1.2",
+                "tmux_target": "main:1.2",
+                "pid": 1111,
+                "session_id": "session-1111",
+            },
+            {
+                "agent_id": f"project:{role}:main:1.3",
+                "tmux_target": "main:1.3",
+                "pid": 2222,
+                "session_id": "session-2222",
+            },
+        ]
+
+    assert (pids / "1111").read_text() == f"project:{role}:main:1.2"
+    assert (pids / "2222").read_text() == f"project:{role}:main:1.3"
+
+
+def test_warroom_add_migrates_inboxes_when_member_ids_change(
+    fake_plugins, isolated_bus, monkeypatch
+):
+    """Unread and archived mail follow canonical agent id rekeys."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    role = "helioy-tools:backend-engineer"
+    inbox_root = isolated_bus / "inbox"
+    old_agent_id = f"project:{role}:main:1.1"
+    new_agent_id = f"project:{role}:main:1.2"
+    old_inbox = inbox_root / old_agent_id
+    old_archive = old_inbox / "archive"
+    old_archive.mkdir(parents=True)
+    (old_inbox / "unread.json").write_text('{"content": "unread"}')
+    (old_archive / "archived.json").write_text('{"content": "archived"}')
+
+    existing_new_inbox = inbox_root / new_agent_id
+    existing_new_inbox.mkdir(parents=True)
+    (existing_new_inbox / "existing.json").write_text('{"content": "existing"}')
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms "
+            "(warroom_id, tmux_session, tmux_window, cwd, layout, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("inbox-rekey", "main", "inbox-rekey", "/tmp/project", "tiled", now, "active"),
+        )
+        _insert_member(
+            conn,
+            warroom_id="inbox-rekey",
+            role=role,
+            tmux_target="main:1.1",
+            pane_id="%1",
+            now=now,
+            state="active",
+            agent_instance_id=old_agent_id,
+        )
+        conn.execute(
+            "INSERT INTO agents "
+            "(agent_id, cwd, tmux_target, pid, session_id, agent_type, runtime, "
+            " registered_at, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                old_agent_id,
+                "/tmp/project",
+                "main:1.1",
+                1111,
+                "session-1111",
+                role,
+                "claude",
+                now,
+                now,
+            ),
+        )
+
+    monkeypatch.setattr(gateway, "spawn_pane", lambda **kw: {
+        "agent_type": kw["agent_type"],
+        "qualified_name": kw["qualified_name"],
+        "tmux_target": "main:1.1",
+        "pane_id": "%2",
+        "runtime": "claude",
+    })
+    _stub_deferred_launch(monkeypatch, {"%1": "main:1.2", "%2": "main:1.1"})
+
+    result = wm.warroom_add(name="inbox-rekey", agent="frontend-engineer")
+
+    assert "error" not in result
+    assert not old_inbox.exists()
+    assert (existing_new_inbox / "existing.json").exists()
+    assert (existing_new_inbox / "unread.json").read_text() == '{"content": "unread"}'
+    assert (existing_new_inbox / "archive" / "archived.json").read_text() == (
+        '{"content": "archived"}'
+    )
+
+
+def test_warroom_add_migrates_chained_duplicate_role_inboxes(
+    fake_plugins, isolated_bus, monkeypatch
+):
+    """Inbox staging prevents A->B, B->C rekeys from mixing mail."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    role = "helioy-tools:backend-engineer"
+    first_old = f"project:{role}:main:1.1"
+    first_new = f"project:{role}:main:1.2"
+    second_old = first_new
+    second_new = f"project:{role}:main:1.3"
+
+    for agent_id, label in [(first_old, "first"), (second_old, "second")]:
+        inbox = isolated_bus / "inbox" / agent_id
+        archive = inbox / "archive"
+        archive.mkdir(parents=True)
+        (inbox / f"{label}-unread.json").write_text(f'{{"content": "{label}-unread"}}')
+        (archive / f"{label}-archived.json").write_text(
+            f'{{"content": "{label}-archived"}}'
+        )
+
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms "
+            "(warroom_id, tmux_session, tmux_window, cwd, layout, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("chain-inbox-rekey", "main", "chain-inbox-rekey", "/tmp/project", "tiled", now, "active"),
+        )
+        for order, pane_id, target in [(0, "%1", "main:1.1"), (1, "%2", "main:1.2")]:
+            _insert_member(
+                conn,
+                warroom_id="chain-inbox-rekey",
+                role=role,
+                tmux_target=target,
+                pane_id=pane_id,
+                now=now,
+                spawn_order=order,
+                state="active",
+                agent_instance_id=f"project:{role}:{target}",
+            )
+            conn.execute(
+                "INSERT INTO agents "
+                "(agent_id, cwd, tmux_target, pid, session_id, agent_type, runtime, "
+                " registered_at, last_seen) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"project:{role}:{target}",
+                    "/tmp/project",
+                    target,
+                    1100 + order,
+                    f"session-{order}",
+                    role,
+                    "claude",
+                    now,
+                    now,
+                ),
+            )
+
+    monkeypatch.setattr(gateway, "spawn_pane", lambda **kw: {
+        "agent_type": kw["agent_type"],
+        "qualified_name": kw["qualified_name"],
+        "tmux_target": "main:1.1",
+        "pane_id": "%3",
+        "runtime": "claude",
+    })
+    _stub_deferred_launch(
+        monkeypatch,
+        {
+            "%1": "main:1.2",
+            "%2": "main:1.3",
+            "%3": "main:1.1",
+        },
+    )
+
+    result = wm.warroom_add(name="chain-inbox-rekey", agent="frontend-engineer")
+
+    assert "error" not in result
+    first_final = isolated_bus / "inbox" / first_new
+    second_final = isolated_bus / "inbox" / second_new
+    assert (first_final / "first-unread.json").exists()
+    assert (first_final / "archive" / "first-archived.json").exists()
+    assert not (first_final / "second-unread.json").exists()
+    assert (second_final / "second-unread.json").exists()
+    assert (second_final / "archive" / "second-archived.json").exists()
+    assert not (isolated_bus / "inbox" / first_old).exists()
+
+
+def test_warroom_add_marks_rekeyed_member_pending_without_registry_row(
+    fake_plugins, monkeypatch
+):
+    """Persisted agent_instance_id is not proof of a live registration."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    role = "helioy-tools:backend-engineer"
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms "
+            "(warroom_id, tmux_session, tmux_window, cwd, layout, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("missing-registry", "main", "missing-registry", "/tmp/project", "tiled", now, "active"),
+        )
+        member_id = _insert_member(
+            conn,
+            warroom_id="missing-registry",
+            role=role,
+            tmux_target="main:1.1",
+            pane_id="%1",
+            now=now,
+            state="active",
+            agent_instance_id=f"project:{role}:main:1.1",
+        )
+
+    monkeypatch.setattr(gateway, "spawn_pane", lambda **kw: {
+        "agent_type": kw["agent_type"],
+        "qualified_name": kw["qualified_name"],
+        "tmux_target": "main:1.1",
+        "pane_id": "%2",
+        "runtime": "claude",
+    })
+    _stub_deferred_launch(monkeypatch, {"%1": "main:1.2", "%2": "main:1.1"})
+
+    result = wm.warroom_add(name="missing-registry", agent="frontend-engineer")
+
+    assert "error" not in result
+    with db() as conn:
+        row = conn.execute(
+            "SELECT tmux_target, agent_instance_id, state FROM warroom_members "
+            "WHERE warroom_member_id = ?",
+            (member_id,),
+        ).fetchone()
+        assert row["tmux_target"] == "main:1.2"
+        assert row["agent_instance_id"] is None
+        assert row["state"] == "pending"
 
 
 def test_warroom_add_allows_duplicate_role(fake_plugins, monkeypatch):
@@ -365,6 +857,7 @@ def test_warroom_add_allows_duplicate_role(fake_plugins, monkeypatch):
         }
 
     monkeypatch.setattr(gateway, "spawn_pane", mock_spawn_pane)
+    _stub_deferred_launch(monkeypatch, {"%10": "main:1.0", "%11": "main:1.1"})
 
     result = wm.warroom_add(name="dup-test", agent="backend-engineer")
     assert "error" not in result
@@ -448,20 +941,15 @@ def test_warroom_remove_agent(fake_plugins, monkeypatch):
 
 
 def test_warroom_remove_short_name_scoped_to_target_warroom(
-    fake_plugins, fake_codex_skills, monkeypatch
+    fake_plugins, fake_codex_instructions, monkeypatch
 ):
     """Short-name removal ignores collisions outside the target warroom."""
     from server._db import _now, db
 
     import server.warroom_server as wm
 
-    cache = fake_codex_skills
-    (cache / "backend-engineer").mkdir()
-    (cache / "backend-engineer" / "SKILL.md").write_text(
-        '---\n'
-        'name: backend-engineer\n'
-        'description: "Codex backend engineer"\n'
-        '---\n'
+    (fake_codex_instructions / "backend-engineer.md").write_text(
+        '---\nname: backend-engineer\ndescription: "Codex backend engineer"\n---\n'
     )
 
     now = _now()
@@ -541,20 +1029,15 @@ def test_warroom_remove_reapplies_stored_layout(fake_plugins, monkeypatch):
 
 
 def test_warroom_remove_short_name_ambiguous_within_same_warroom(
-    fake_plugins, fake_codex_skills, monkeypatch
+    fake_plugins, fake_codex_instructions, monkeypatch
 ):
     """Short-name removal stays ambiguous when the target warroom has both matches."""
     from server._db import _now, db
 
     import server.warroom_server as wm
 
-    cache = fake_codex_skills
-    (cache / "backend-engineer").mkdir()
-    (cache / "backend-engineer" / "SKILL.md").write_text(
-        '---\n'
-        'name: backend-engineer\n'
-        'description: "Codex backend engineer"\n'
-        '---\n'
+    (fake_codex_instructions / "backend-engineer.md").write_text(
+        '---\nname: backend-engineer\ndescription: "Codex backend engineer"\n---\n'
     )
 
     now = _now()

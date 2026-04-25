@@ -102,6 +102,7 @@ def test_register_accepts_additional_adapter_without_evicting_default():
     finally:
         # Clean up module-level registry state
         from server.runtimes import base as _base
+
         _base._adapters.pop("fake", None)
 
 
@@ -136,9 +137,7 @@ def test_spawn_pane_delegates_launch_command_to_adapter(monkeypatch):
         def agents_cache_dir(self):
             return Path("/tmp/stub")
 
-    monkeypatch.setattr(
-        tmux_mod, "default_adapter", lambda: StubAdapter()
-    )
+    monkeypatch.setattr(tmux_mod, "default_adapter", lambda: StubAdapter())
 
     tmux_mod.gateway.spawn_pane(
         session="alp",
@@ -152,9 +151,40 @@ def test_spawn_pane_delegates_launch_command_to_adapter(monkeypatch):
 
     send_keys_calls = [c for c in call_log if c[0] == "send-keys"]
     assert send_keys_calls, "spawn_pane did not issue send-keys"
-    assert marker in send_keys_calls[0], (
-        "spawn_pane did not use the adapter's launch command"
+    assert marker in send_keys_calls[0], "spawn_pane did not use the adapter's launch command"
+
+
+def test_spawn_pane_can_defer_runtime_launch(monkeypatch):
+    """warroom_add needs a pane split before the runtime registers."""
+    import server._tmux as tmux_mod
+
+    call_log: list[tuple[str, ...]] = []
+
+    def fake_run(self, *args, timeout=None):
+        call_log.append(args)
+        if args[0] == "split-window":
+            return "%2"
+        if args[0] == "display-message":
+            return "alp:1.1"
+        return ""
+
+    monkeypatch.setattr(tmux_mod.TmuxGateway, "_run", fake_run)
+
+    result = tmux_mod.gateway.spawn_pane(
+        session="alp",
+        window="wr",
+        cwd="/tmp/repo",
+        agent_type="backend-engineer",
+        qualified_name="foo:bar",
+        is_first=False,
+        layout="tiled",
+        launch=False,
     )
+
+    assert result["tmux_target"] == "alp:1.1"
+    assert result["pane_id"] == "%2"
+    assert not [c for c in call_log if c[0] == "send-keys"]
+    assert not [c for c in call_log if c[0] == "select-pane"]
 
 
 # ── Core integration: _self_agent_id reads adapter-declared env var ──────────
@@ -194,18 +224,19 @@ def test_warroom_spawn_records_runtime_from_adapter(monkeypatch):
         "model": "opus",
     }
     monkeypatch.setattr(
-        warroom_service, "_scan_agent_types",
+        warroom_service,
+        "_scan_agent_types",
         lambda runtime_id=None: [fake_agent],
     )
     monkeypatch.setattr(
-        warroom_service, "_resolve_agent_type",
+        warroom_service,
+        "_resolve_agent_type",
         lambda name, runtime_id=None: fake_agent if name in {"bar", "foo:bar"} else None,
     )
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
     monkeypatch.setattr(
-        tmux_mod.gateway, "current_session_name", lambda: "alp"
-    )
-    monkeypatch.setattr(
-        tmux_mod.gateway, "spawn_pane",
+        tmux_mod.gateway,
+        "spawn_pane",
         lambda **kw: {
             "agent_type": fake_agent["name"],
             "qualified_name": fake_agent["qualified_name"],
@@ -228,9 +259,7 @@ def test_warroom_spawn_records_runtime_from_adapter(monkeypatch):
         def agents_cache_dir(self):
             return Path("/tmp")
 
-    monkeypatch.setattr(
-        warroom_service, "default_adapter", lambda: StubAdapter()
-    )
+    monkeypatch.setattr(warroom_service, "default_adapter", lambda: StubAdapter())
 
     result = warroom_service.spawn(name="wr", agents=["bar"], cwd="/tmp/r")
     assert "error" not in result, result
@@ -299,17 +328,33 @@ def test_codex_build_launch_command_points_at_launch_wrapper():
     wrapper = Path(cmd)
     assert wrapper.name == "codex-launch.sh"
     assert wrapper.exists(), f"wrapper missing: {wrapper}"
-    # Wrapper forwards arguments to codex; the caller controls flags.
+    # Wrapper forces non-interactive Codex panes through the approved launch mode.
     content = wrapper.read_text()
-    assert 'codex "$@"' in content
+    assert 'codex --dangerously-bypass-approvals-and-sandbox "$@"' in content
 
 
-def test_codex_build_launch_command_ignores_qualified_name():
-    """Codex has no --agent flag; role-mode must not emit one."""
+def test_codex_build_launch_command_adds_model_instructions_file(fake_codex_instructions):
+    """Codex specialist launch binds the role through model_instructions_file."""
     bare = CODEX.build_launch_command(qualified_name=None)
-    role = CODEX.build_launch_command(qualified_name="helioy-tools:backend-engineer")
-    assert bare == role
+    role = CODEX.build_launch_command(qualified_name="codex:agent-browser")
+    assert bare != role
     assert "--agent" not in role
+    assert "--config" in role
+    assert "model_instructions_file=" in role
+    assert str(fake_codex_instructions / "agent-browser.md") in role
+
+
+def test_codex_build_launch_command_resolves_frontmatter_role_name(
+    isolated_codex_cache,
+):
+    """Codex launch follows discovered frontmatter names, not just filenames."""
+    instructions = isolated_codex_cache["instructions"]
+    path = instructions / "ux.md"
+    path.write_text('---\nname: ux-designer\ndescription: "UX role"\n---\n')
+
+    role = CODEX.build_launch_command(qualified_name="codex:ux-designer")
+
+    assert str(path) in role
 
 
 # ── Registry: coexistence of Claude and Codex ────────────────────────────────
@@ -359,13 +404,50 @@ def test_spawn_pane_uses_for_id_when_runtime_specified(monkeypatch):
     assert result["runtime"] == "codex"
 
 
+def test_spawn_pane_codex_specialist_includes_model_instructions_file(
+    fake_codex_instructions, monkeypatch
+):
+    """Codex specialist panes receive the role instructions config flag."""
+    import server._tmux as tmux_mod
+
+    call_log: list[tuple[str, ...]] = []
+
+    def fake_run(self, *args, timeout=None):
+        call_log.append(args)
+        if args[0] == "new-window":
+            return "%1"
+        if args[0] == "display-message":
+            return "alp:1.0"
+        return ""
+
+    monkeypatch.setattr(tmux_mod.TmuxGateway, "_run", fake_run)
+
+    result = tmux_mod.gateway.spawn_pane(
+        session="alp",
+        window="wr",
+        cwd="/tmp/repo",
+        agent_type="agent-browser",
+        qualified_name="codex:agent-browser",
+        is_first=True,
+        layout="tiled",
+        runtime="codex",
+    )
+
+    send_keys_calls = [c for c in call_log if c[0] == "send-keys"]
+    assert send_keys_calls, "spawn_pane did not issue send-keys"
+    cmd = send_keys_calls[0][3]
+    assert "codex-launch.sh" in cmd
+    assert "--config" in cmd
+    assert "model_instructions_file=" in cmd
+    assert str(fake_codex_instructions / "agent-browser.md") in cmd
+    assert result["runtime"] == "codex"
+
+
 def test_spawn_pane_rejects_unregistered_runtime(monkeypatch):
     """spawn_pane surfaces KeyError for unknown runtimes rather than silently defaulting."""
     import server._tmux as tmux_mod
 
-    monkeypatch.setattr(
-        tmux_mod.TmuxGateway, "_run", lambda self, *a, **kw: "%1"
-    )
+    monkeypatch.setattr(tmux_mod.TmuxGateway, "_run", lambda self, *a, **kw: "%1")
 
     with pytest.raises(KeyError):
         tmux_mod.gateway.spawn_pane(
@@ -386,10 +468,8 @@ def test_spawn_pane_rejects_unregistered_runtime(monkeypatch):
 def test_warroom_spawn_repos_persists_requested_codex_runtime(monkeypatch, tmp_path):
     """warroom.spawn_repos(runtime='codex') records 'codex' in the member row.
 
-    ``spawn`` itself rejects codex-as-specialist (see
-    ``test_warroom_spawn_rejects_codex_specialist_with_helpful_error``);
-    general-mode ``spawn_repos`` remains the supported path for codex
-    and must persist the requested runtime.
+    Repo mode remains the no-specialist Codex path and must persist the
+    requested runtime.
     """
     import server._db as _db_mod
     import server._tmux as tmux_mod
@@ -399,9 +479,7 @@ def test_warroom_spawn_repos_persists_requested_codex_runtime(monkeypatch, tmp_p
         (tmp_path / repo / ".git").mkdir(parents=True)
     monkeypatch.setenv("HELIOY_BASE", str(tmp_path))
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
-    monkeypatch.setattr(
-        tmux_mod.gateway, "current_session_name", lambda: "alp"
-    )
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
     pane_counter = [0]
 
     def fake_spawn(**kw):
@@ -434,9 +512,8 @@ def test_warroom_spawn_repos_persists_requested_codex_runtime(monkeypatch, tmp_p
 def test_warroom_spawn_repos_threads_runtime_to_spawn_pane(monkeypatch, tmp_path):
     """The runtime arg must reach gateway.spawn_pane so per-pane dispatch works.
 
-    Uses ``spawn_repos`` (general mode) because codex-as-specialist is
-    rejected at the service boundary; the underlying threading logic is
-    shared, so this test still proves the runtime kwarg flows through.
+    Uses ``spawn_repos`` to prove the general-mode runtime kwarg reaches
+    the lower-level tmux gateway.
     """
     import server._tmux as tmux_mod
     import server.services.warroom as warroom_service
@@ -477,19 +554,19 @@ def test_warroom_spawn_rejects_unknown_runtime(monkeypatch):
         "model": "opus",
     }
     monkeypatch.setattr(
-        warroom_service, "_scan_agent_types",
+        warroom_service,
+        "_scan_agent_types",
         lambda runtime_id=None: [fake_agent],
     )
     monkeypatch.setattr(
-        warroom_service, "_resolve_agent_type",
+        warroom_service,
+        "_resolve_agent_type",
         lambda name, runtime_id=None: fake_agent if name in {"bar", "foo:bar"} else None,
     )
     monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
 
-    result = warroom_service.spawn(
-        name="wr3", agents=["bar"], cwd="/tmp/r", runtime="nonexistent"
-    )
+    result = warroom_service.spawn(name="wr3", agents=["bar"], cwd="/tmp/r", runtime="nonexistent")
     assert "error" in result
     assert "nonexistent" in result["error"]
     assert "claude" in result["error"]
@@ -504,56 +581,61 @@ def test_claude_adapter_supports_specialist_roles_is_true():
     assert CLAUDE.supports_specialist_roles is True
 
 
-def test_codex_adapter_does_not_support_specialist_roles():
-    """Codex skills are per-turn slash commands, not session-wide personas.
+def test_codex_adapter_supports_specialist_roles_via_instruction_files():
+    """Codex enacts specialist roles via model_instructions_file at launch.
 
-    Persisting a specialist role for codex would claim a capability the
-    runtime does not enact, so the adapter reports ``False`` and the
-    service layer rejects codex-specialist spawn/add outright.
+    The adapter only discovers roles backed by instruction files, so
+    warroom validation still rejects missing role names before spawning.
     """
-    assert CODEX.supports_specialist_roles is False
+    assert CODEX.supports_specialist_roles is True
 
 
-def test_warroom_spawn_rejects_codex_specialist_with_helpful_error(monkeypatch):
-    """warroom.spawn(runtime='codex', agents=[...]) rejects before any DB write.
-
-    The error names the runtime, explains why it is rejected, and points
-    at ``warroom_spawn_repos`` as the supported escape hatch. Gate fires
-    before agent resolution, so invalid agent names must not short-circuit
-    the capability error.
-    """
+def test_warroom_spawn_accepts_codex_specialist_with_instruction_file(
+    fake_codex_instructions, monkeypatch
+):
+    """warroom.spawn(runtime='codex', agents=[...]) persists a Codex role."""
     import server._db as _db_mod
     import server._tmux as tmux_mod
     import server.services.warroom as warroom_service
 
     monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
+    monkeypatch.setattr(
+        tmux_mod.gateway,
+        "spawn_pane",
+        lambda **kw: {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": "alp:1.0",
+            "pane_id": "%1",
+            "runtime": kw["runtime"],
+        },
+    )
 
     result = warroom_service.spawn(
-        name="reject-codex",
-        agents=["something-unresolvable"],
+        name="codex-role",
+        agents=["agent-browser"],
         cwd="/tmp/r",
         runtime="codex",
     )
-    assert "codex" in result["error"]
-    assert "specialist-role" in result["error"]
-    assert "warroom_spawn_repos" in result["error"]
+    assert "error" not in result
+    assert result["members"][0]["qualified_name"] == "codex:agent-browser"
+    assert result["members"][0]["desired_runtime"] == "codex"
 
     with _db_mod.db() as conn:
-        row = conn.execute(
-            "SELECT warroom_id FROM warrooms WHERE warroom_id = ?",
-            ("reject-codex",),
-        ).fetchone()
-    assert row is None, "rejection must not create a warroom row"
+        rows = conn.execute(
+            "SELECT desired_runtime, desired_role FROM warroom_members WHERE warroom_id = ?",
+            ("codex-role",),
+        ).fetchall()
+    assert [(r["desired_runtime"], r["desired_role"]) for r in rows] == [
+        ("codex", "codex:agent-browser")
+    ]
 
 
-def test_warroom_add_rejects_codex_specialist_with_helpful_error(monkeypatch):
-    """warroom.add(runtime='codex', agent=...) rejects with the same semantics.
-
-    Add has the same capability gate as spawn, so adding a codex
-    specialist to an existing Claude warroom must fail before mutating
-    the DB or spawning a pane.
-    """
+def test_warroom_add_accepts_codex_specialist_with_instruction_file(
+    fake_codex_instructions, monkeypatch
+):
+    """warroom.add(runtime='codex', agent=...) can add a Codex specialist."""
     import server._db as _db_mod
     import server._tmux as tmux_mod
     import server.services.warroom as warroom_service
@@ -565,50 +647,82 @@ def test_warroom_add_rejects_codex_specialist_with_helpful_error(monkeypatch):
         "summary": "",
         "model": "opus",
     }
+    codex_agent = {
+        "qualified_name": "codex:agent-browser",
+        "name": "agent-browser",
+        "namespace": "codex",
+        "summary": "",
+        "model": "",
+    }
     monkeypatch.setattr(
-        warroom_service, "_scan_agent_types",
-        lambda runtime_id=None: [fake_agent],
+        warroom_service,
+        "_scan_agent_types",
+        lambda runtime_id=None: [codex_agent] if runtime_id == "codex" else [fake_agent],
     )
     monkeypatch.setattr(
-        warroom_service, "_resolve_agent_type",
-        lambda name, runtime_id=None: fake_agent if name in {"bar", "foo:bar"} else None,
+        warroom_service,
+        "_resolve_agent_type",
+        lambda name, runtime_id=None: (
+            fake_agent
+            if runtime_id in (None, "claude") and name in {"bar", "foo:bar"}
+            else codex_agent
+            if runtime_id == "codex" and name in {"agent-browser", "codex:agent-browser"}
+            else None
+        ),
     )
     monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+
+    pane_counter = [0]
+
+    def fake_spawn(**kw):
+        idx = pane_counter[0]
+        pane_counter[0] += 1
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": f"alp:1.{idx}",
+            "pane_id": f"%{idx}",
+            "runtime": kw["runtime"],
+        }
+
+    monkeypatch.setattr(tmux_mod.gateway, "spawn_pane", fake_spawn)
     monkeypatch.setattr(
-        tmux_mod.gateway, "spawn_pane",
+        tmux_mod.gateway,
+        "target_for_pane",
+        lambda pane_id: {"%0": "alp:1.0", "%1": "alp:1.1"}[pane_id],
+    )
+    monkeypatch.setattr(tmux_mod.gateway, "set_pane_title", lambda pane_id, title: None)
+    monkeypatch.setattr(
+        tmux_mod.gateway,
+        "launch_pane",
         lambda **kw: {
-            "agent_type": fake_agent["name"],
-            "qualified_name": fake_agent["qualified_name"],
-            "tmux_target": "alp:1.1",
-            "pane_id": "%2",
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": kw["tmux_target"],
+            "pane_id": kw["pane_id"],
             "runtime": kw["runtime"],
         },
     )
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
 
     # Claude warroom spawn succeeds (claude supports specialist roles).
-    spawn_result = warroom_service.spawn(
-        name="mix", agents=["bar"], cwd="/tmp/r"
-    )
+    spawn_result = warroom_service.spawn(name="mix", agents=["bar"], cwd="/tmp/r")
     assert "error" not in spawn_result
 
-    add_result = warroom_service.add(
-        name="mix", agent="bar", runtime="codex"
-    )
-    assert "codex" in add_result["error"]
-    assert "specialist-role" in add_result["error"]
-    assert "warroom_spawn_repos" in add_result["error"]
+    add_result = warroom_service.add(name="mix", agent="agent-browser", runtime="codex")
+    assert "error" not in add_result
+    assert add_result["added"]["qualified_name"] == "codex:agent-browser"
 
-    # DB must still reflect only the original Claude member.
     with _db_mod.db() as conn:
-        runtimes = [
-            row["desired_runtime"]
+        rows = [
+            (row["desired_runtime"], row["desired_role"])
             for row in conn.execute(
-                "SELECT desired_runtime FROM warroom_members WHERE warroom_id = ?",
+                "SELECT desired_runtime, desired_role FROM warroom_members WHERE warroom_id = ? "
+                "ORDER BY spawn_order",
                 ("mix",),
             )
         ]
-    assert runtimes == ["claude"]
+    assert rows == [("claude", "foo:bar"), ("codex", "codex:agent-browser")]
 
 
 # ── Identity: multi-runtime self PID resolution ──────────────────────────────

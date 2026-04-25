@@ -41,7 +41,7 @@ def _hook_env(bus_dir: Path, **overrides: str) -> dict[str, str]:
         "CLAUDE_PROJECT_DIR": SMOKE_PROJECT_DIR,
         "PWD": SMOKE_PROJECT_DIR,
     }
-    for key in ("TMUX", "TMUX_PANE"):
+    for key in ("TMUX", "TMUX_PANE", "HELIOY_RUNTIME"):
         env.pop(key, None)
     env.update(overrides)
     return env
@@ -190,7 +190,7 @@ def _install_codex_stub(tmp_dir: Path, marker: Path) -> Path:
     stub_dir = tmp_dir / "stub-bin"
     stub_dir.mkdir()
     stub = stub_dir / "codex"
-    stub.write_text(f"#!/bin/sh\necho codex-ran > {marker}\nexit 0\n")
+    stub.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {marker}\nexit 0\n")
     stub.chmod(0o755)
     return stub_dir
 
@@ -217,8 +217,9 @@ def test_codex_launch_wrapper_registers_unregisters_and_runs_codex(
         f"wrapper failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
 
-    # Stub codex actually ran.
+    # Stub codex actually ran with the mandatory bypass flag.
     assert marker.exists(), "wrapper did not invoke codex"
+    assert marker.read_text().splitlines()[0] == "--dangerously-bypass-approvals-and-sandbox"
 
     # Unregister trap fired on clean exit: agent row is gone.
     conn = sqlite3.connect(isolated_bus / "registry.db")

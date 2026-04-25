@@ -9,6 +9,12 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def isolated_runtime_env(monkeypatch):
+    """Keep host runtime env from changing default-runtime assertions."""
+    monkeypatch.delenv("HELIOY_RUNTIME", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def isolated_bus(tmp_path, monkeypatch):
     """Redirect all bus paths to a temporary directory for each test."""
     bus_dir = tmp_path / "bus"
@@ -42,11 +48,10 @@ def isolated_codex_cache(tmp_path, monkeypatch):
     """Point Codex discovery at empty tmp roots by default.
 
     Without this, Codex discovery would read the developer's real
-    ``~/.codex/skills`` and ``~/.agents/skills`` directories and leak
-    them into union-discovery assertions. Tests that need Codex skills
-    create them under these directories and monkeypatch the adapter
-    explicitly through this fixture stack (see
-    ``fake_codex_skills``).
+    ``~/.codex/developer_instructions`` directory and leak entries into
+    union-discovery assertions. Skill roots stay patched for tests that
+    assert default paths or legacy helper behavior, but spawnable Codex
+    roles now come from ``model_instructions_file`` material.
     """
     from server.runtimes.codex import CODEX
 
@@ -54,10 +59,13 @@ def isolated_codex_cache(tmp_path, monkeypatch):
     codex_cache.mkdir()
     shared_cache = tmp_path / "shared-skills"
     shared_cache.mkdir()
+    instructions = tmp_path / "developer-instructions"
+    instructions.mkdir()
     monkeypatch.setattr(CODEX, "agents_cache_dir", lambda: codex_cache)
     monkeypatch.setattr(CODEX, "shared_skills_dir", lambda: shared_cache)
     monkeypatch.setattr(CODEX, "skill_roots", lambda: [codex_cache, shared_cache])
-    yield {"codex": codex_cache, "shared": shared_cache}
+    monkeypatch.setattr(CODEX, "model_instructions_dir", lambda: instructions)
+    yield {"codex": codex_cache, "shared": shared_cache, "instructions": instructions}
 
 
 @pytest.fixture()
@@ -152,6 +160,27 @@ def fake_codex_skills(isolated_codex_cache):
     (cache / "empty-dir").mkdir()
 
     yield cache
+
+
+@pytest.fixture()
+def fake_codex_instructions(isolated_codex_cache):
+    """Create fake Codex role instruction files used for specialist spawn."""
+    instructions = isolated_codex_cache["instructions"]
+
+    (instructions / "agent-browser.md").write_text(
+        "---\n"
+        "name: agent-browser\n"
+        'description: "Automates browser interactions for web testing"\n'
+        "---\n"
+    )
+    (instructions / "linear.md").write_text(
+        '---\nname: linear\ndescription: "Manage issues in Linear"\n---\n'
+    )
+    (instructions / "openai-docs.md").write_text(
+        '---\nname: openai-docs\ndescription: "Use official OpenAI docs"\n---\n'
+    )
+
+    yield instructions
 
 
 def _insert_member(conn, *, warroom_id, role, tmux_target, pane_id, now,
