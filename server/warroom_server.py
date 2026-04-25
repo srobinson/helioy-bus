@@ -37,7 +37,7 @@ def warroom_discover(
     """Search available agent types across registered runtimes.
 
     Each runtime adapter owns its own catalogue layout (Claude plugin
-    cache vs. Codex skills, etc.) and contributes agents via
+    cache vs. Codex instruction files, etc.) and contributes agents via
     ``discover_agent_types()``. Results are cached per runtime with 60s TTL.
 
     Args:

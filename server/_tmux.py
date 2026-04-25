@@ -92,6 +92,20 @@ class TmuxGateway:
         """Reflow a window's panes with the named layout. Best-effort."""
         return self._run_silent("select-layout", "-t", f"{session}:{window}", layout)
 
+    def target_for_pane(self, pane_id: str) -> str:
+        """Return the current mutable tmux target for a stable pane id."""
+        return self._run(
+            "display-message",
+            "-t",
+            pane_id,
+            "-p",
+            "#{session_name}:#{window_index}.#{pane_index}",
+        )
+
+    def set_pane_title(self, pane_id: str, title: str) -> None:
+        """Set a pane title used by runtime startup hooks for identity."""
+        self._run("select-pane", "-t", pane_id, "-T", title)
+
     # --- nudging ---
 
     def nudge(self, tmux_target: str, runtime: str = "") -> bool:
@@ -143,6 +157,7 @@ class TmuxGateway:
         is_first: bool,
         layout: str,
         runtime: str | None = None,
+        launch: bool = True,
     ) -> dict:
         """Create a single tmux pane running a runtime agent.
 
@@ -157,8 +172,6 @@ class TmuxGateway:
         resolved by ``runtime`` (or the default adapter when
         ``runtime`` is None); this gateway stays runtime-agnostic.
         """
-        repo = os.path.basename(cwd)
-
         if is_first:
             # -a appends after current window, avoiding index collisions.
             # Trailing colon on session ensures tmux targets the session.
@@ -187,20 +200,6 @@ class TmuxGateway:
                 "#{pane_id}",
             )
 
-        tmux_target = self._run(
-            "display-message",
-            "-t",
-            pane_id,
-            "-p",
-            "#{session_name}:#{window_index}.#{pane_index}",
-        )
-
-        # Pane title must be set BEFORE launching the runtime: the
-        # runtime's SessionStart hook reads it to resolve identity.
-        display_name = qualified_name if qualified_name is not None else agent_type
-        identity = f"{repo}:{display_name}:{tmux_target}"
-        self._run("select-pane", "-t", pane_id, "-T", identity)
-
         if is_first:
             self._run(
                 "set-option",
@@ -211,15 +210,55 @@ class TmuxGateway:
             )
 
         adapter = for_id(runtime) if runtime else default_adapter()
-        cmd = adapter.build_launch_command(qualified_name=qualified_name)
-        self._run("send-keys", "-t", pane_id, cmd, "Enter")
-
         self._run("select-layout", "-t", f"{session}:{window}", layout)
+        tmux_target = self.target_for_pane(pane_id)
+
+        if launch:
+            return self.launch_pane(
+                pane_id=pane_id,
+                cwd=cwd,
+                agent_type=agent_type,
+                qualified_name=qualified_name,
+                runtime=runtime,
+                tmux_target=tmux_target,
+            )
 
         return {
             "agent_type": agent_type,
             "qualified_name": qualified_name,
             "tmux_target": tmux_target,
+            "pane_id": pane_id,
+            "runtime": adapter.runtime_id,
+        }
+
+    def launch_pane(
+        self,
+        *,
+        pane_id: str,
+        cwd: str,
+        agent_type: str,
+        qualified_name: str | None,
+        runtime: str | None = None,
+        tmux_target: str | None = None,
+    ) -> dict:
+        """Launch a runtime in an existing pane after identity is stable."""
+        adapter = for_id(runtime) if runtime else default_adapter()
+        current_target = tmux_target or self.target_for_pane(pane_id)
+        repo = os.path.basename(cwd)
+        display_name = qualified_name if qualified_name is not None else agent_type
+        identity = f"{repo}:{display_name}:{current_target}"
+
+        # Pane title must be set BEFORE launching the runtime: the
+        # runtime's SessionStart hook reads it to resolve identity.
+        self.set_pane_title(pane_id, identity)
+
+        cmd = adapter.build_launch_command(qualified_name=qualified_name)
+        self._run("send-keys", "-t", pane_id, cmd, "Enter")
+
+        return {
+            "agent_type": agent_type,
+            "qualified_name": qualified_name,
+            "tmux_target": current_target,
             "pane_id": pane_id,
             "runtime": adapter.runtime_id,
         }

@@ -1,8 +1,8 @@
 """Tests for runtime-aware agent type discovery.
 
 Covers the adapter-level ``discover_agent_types()`` contract (Claude plugin
-cache, Codex skills catalogue), the shared ``_scan_agent_types`` union/scoping
-logic, and the warroom-level consumers (``warroom_discover`` and
+cache, Codex launch instruction catalogue), the shared ``_scan_agent_types``
+union/scoping logic, and the warroom-level consumers (``warroom_discover`` and
 ``warroom.spawn`` runtime-scoped validation).
 
 These tests were extracted from ``test_runtime_adapters.py`` to keep each
@@ -42,11 +42,13 @@ def test_claude_adapter_discover_returns_empty_when_cache_missing(tmp_path, monk
     assert CLAUDE.discover_agent_types() == []
 
 
-# ── Adapter discovery contract: Codex skills ─────────────────────────────────
+# ── Adapter discovery contract: Codex model instructions ─────────────────────
 
 
-def test_codex_adapter_discover_agent_types_returns_skills(fake_codex_skills):
-    """Codex discovery covers local, nested system, and shared skill trees."""
+def test_codex_adapter_discover_agent_types_returns_instruction_roles(
+    fake_codex_instructions,
+):
+    """Codex discovery exposes launchable model-instructions roles."""
     agents = CODEX.discover_agent_types()
     qualified = [a["qualified_name"] for a in agents]
     assert qualified == [
@@ -58,52 +60,43 @@ def test_codex_adapter_discover_agent_types_returns_skills(fake_codex_skills):
     assert all(a["runtime"] == "codex" for a in agents)
 
 
-def test_codex_adapter_discover_skips_dirs_without_skill_md(fake_codex_skills):
-    """A skill directory with no SKILL.md is silently skipped (fixture ships one)."""
+def test_codex_adapter_discover_ignores_non_markdown_files(fake_codex_instructions):
+    """Only .md instruction files become launchable Codex roles."""
+    (fake_codex_instructions / "not-a-role.txt").write_text("ignore me\n")
     agents = CODEX.discover_agent_types()
-    assert "codex:empty-dir" not in {a["qualified_name"] for a in agents}
+    assert "codex:not-a-role" not in {a["qualified_name"] for a in agents}
 
 
 def test_codex_adapter_discover_returns_empty_when_cache_missing(tmp_path, monkeypatch):
-    """Codex with no skills dir returns [] rather than raising."""
+    """Codex with no instructions dir returns [] rather than raising."""
     monkeypatch.setattr(
         CODEX,
-        "skill_roots",
-        lambda: [tmp_path / "absent-codex", tmp_path / "absent-shared"],
+        "model_instructions_dir",
+        lambda: tmp_path / "absent-codex-instructions",
     )
     assert CODEX.discover_agent_types() == []
 
 
-def test_codex_adapter_discover_prefers_runtime_local_skill_over_shared_duplicate(
+def test_codex_adapter_discover_uses_filename_when_frontmatter_is_absent(
     isolated_codex_cache,
 ):
-    """Local Codex skills win when the shared tree exports the same name."""
-    codex_cache = isolated_codex_cache["codex"]
-    shared_cache = isolated_codex_cache["shared"]
-
-    (codex_cache / "agent-browser").mkdir()
-    (codex_cache / "agent-browser" / "SKILL.md").write_text(
-        '---\n'
-        'name: agent-browser\n'
-        'description: "Local browser skill"\n'
-        '---\n'
-    )
-    (shared_cache / "agent-browser").mkdir()
-    (shared_cache / "agent-browser" / "SKILL.md").write_text(
-        '---\n'
-        'name: agent-browser\n'
-        'description: "Shared browser skill"\n'
-        '---\n'
+    """Plain instruction files derive their role name and summary from content."""
+    instructions = isolated_codex_cache["instructions"]
+    (instructions / "browser-debugger.md").write_text(
+        "You are a UI debugger that reproduces issues in the browser.\n"
     )
 
     agents = {a["qualified_name"]: a for a in CODEX.discover_agent_types()}
-    assert agents["codex:agent-browser"]["summary"] == "Local browser skill"
+    assert agents["codex:browser-debugger"]["name"] == "browser-debugger"
+    assert agents["codex:browser-debugger"]["summary"] == (
+        "You are a UI debugger that reproduces issues in the browser."
+    )
 
 
 # ── Shared _scan_agent_types: union semantics ────────────────────────────────
 
 
-def test_scan_agent_types_union_sorted_by_qualified_name(fake_plugins, fake_codex_skills):
+def test_scan_agent_types_union_sorted_by_qualified_name(fake_plugins, fake_codex_instructions):
     """runtime_id=None returns the union across every registered runtime, sorted."""
     import server._warroom as wr
 
@@ -117,21 +110,23 @@ def test_scan_agent_types_union_sorted_by_qualified_name(fake_plugins, fake_code
     assert "pr-review-toolkit:code-reviewer" in qualified
 
 
-def test_scan_agent_types_scoped_to_runtime_excludes_other(fake_plugins, fake_codex_skills):
+def test_scan_agent_types_scoped_to_runtime_excludes_other(fake_plugins, fake_codex_instructions):
     """An explicit runtime_id returns only that runtime's catalogue."""
     import server._warroom as wr
 
     codex_only = wr._scan_agent_types("codex")
     assert all(a["runtime"] == "codex" for a in codex_only)
     assert {a["qualified_name"] for a in codex_only} == {
-        "codex:agent-browser", "codex:linear", "codex:openai-docs",
+        "codex:agent-browser",
+        "codex:linear",
+        "codex:openai-docs",
     }
 
 
 # ── warroom_discover: runtime filtering ──────────────────────────────────────
 
 
-def test_warroom_discover_scopes_to_codex_runtime(fake_plugins, fake_codex_skills):
+def test_warroom_discover_scopes_to_codex_runtime(fake_plugins, fake_codex_instructions):
     """runtime='codex' must drop Claude agents from the result."""
     import server.warroom_server as wm
 
@@ -142,7 +137,7 @@ def test_warroom_discover_scopes_to_codex_runtime(fake_plugins, fake_codex_skill
     assert result["runtimes"] == ["codex"]
 
 
-def test_warroom_discover_returns_error_for_unknown_runtime(fake_plugins, fake_codex_skills):
+def test_warroom_discover_returns_error_for_unknown_runtime(fake_plugins, fake_codex_instructions):
     """An unregistered runtime id surfaces a helpful error listing the known ids."""
     import server.warroom_server as wm
 
@@ -153,7 +148,7 @@ def test_warroom_discover_returns_error_for_unknown_runtime(fake_plugins, fake_c
     assert "codex" in result["error"]
 
 
-def test_warroom_discover_union_exposes_both_runtimes(fake_plugins, fake_codex_skills):
+def test_warroom_discover_union_exposes_both_runtimes(fake_plugins, fake_codex_instructions):
     """No runtime filter returns the union with both runtimes in the metadata."""
     import server.warroom_server as wm
 
@@ -166,9 +161,9 @@ def test_warroom_discover_union_exposes_both_runtimes(fake_plugins, fake_codex_s
 
 
 def test_warroom_spawn_rejects_agent_not_in_selected_runtime(
-    fake_plugins, fake_codex_skills, monkeypatch
+    fake_plugins, fake_codex_instructions, monkeypatch
 ):
-    """Spawning runtime='claude' with a Codex-only skill fails validation.
+    """Spawning runtime='claude' with a Codex-only role fails validation.
 
     The catalogue is wide (both fixtures loaded), but spawning with
     runtime='claude' scopes _resolve_agent_type to the Claude catalogue,
@@ -191,15 +186,11 @@ def test_warroom_spawn_rejects_agent_not_in_selected_runtime(
     assert details and details[0]["agent"] == "codex:agent-browser"
 
 
-def test_resolve_agent_type_scopes_to_codex_catalogue(
-    fake_plugins, fake_codex_skills
-):
-    """The mirror of ``_resolve_agent_type`` scoping to Codex-only skills.
+def test_resolve_agent_type_scopes_to_codex_catalogue(fake_plugins, fake_codex_instructions):
+    """The mirror of ``_resolve_agent_type`` scoping to Codex-only roles.
 
-    The service layer bars codex-specialist spawn at the service boundary,
-    so this check drops below the service layer and asserts the underlying
-    scoping mechanism directly: ``_resolve_agent_type(name, 'codex')``
-    with a Codex-only skill name returns a Codex-tagged descriptor.
+    ``_resolve_agent_type(name, 'codex')`` with a Codex-only instruction
+    role returns a Codex-tagged descriptor.
     """
     import server._warroom as wr
 

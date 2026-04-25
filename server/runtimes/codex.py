@@ -3,9 +3,9 @@
 Owns the Codex CLI invocation and identity conventions. Registered
 alongside the Claude adapter without displacing it as default.
 
-Codex has no ``--agent <qualified-name>`` plugin analog, so role-mode and
-repo-mode spawn the same base command. Role selection for Codex panes is
-expressed through the pane title, not a CLI flag. Codex also has no
+Codex has no ``--agent <qualified-name>`` plugin analog. Specialist
+warroom panes are launched by passing a role-specific instructions file
+through ``--config model_instructions_file=<path>``. Codex also has no
 SessionStart/SessionEnd hook mechanism, so the adapter launches codex
 through ``plugin/hooks/codex-launch.sh`` which bootstraps registration
 on the bus and tears it down on exit.
@@ -13,6 +13,7 @@ on the bus and tears it down on exit.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 from server.runtimes._frontmatter import _parse_frontmatter
@@ -33,78 +34,107 @@ CODEX_MESSAGE_SUFFIX = (
 )
 
 
+def _summarize_markdown(path: Path) -> str:
+    """Return the first useful prose line from a role instructions file."""
+    in_frontmatter = False
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line == "---":
+            in_frontmatter = not in_frontmatter
+            continue
+        if in_frontmatter or line.startswith("#"):
+            continue
+        return line
+    return ""
+
+
 class CodexRuntimeAdapter:
     runtime_id = "codex"
     self_pid_env = "HELIOY_BUS_CODEX_PID"
     message_suffix = CODEX_MESSAGE_SUFFIX
 
-    # Codex has no persona CLI flag; skills are activated per-turn via
-    # slash commands, not bound to the session at launch. A "specialist
-    # role" in a warroom would persist state the runtime never enacts,
-    # so we reject such spawns at the service layer. Codex is usable in
-    # general/repo mode via warroom_spawn_repos.
-    supports_specialist_roles = False
+    # Codex can bind a specialist role at launch by using a role-specific
+    # model_instructions_file. The adapter only discovers roles with such
+    # files, so warroom validation rejects missing roles before spawning.
+    supports_specialist_roles = True
 
-    # Codex does not layer a plugin/version directory under its skills
-    # cache, so all discovered skills share a single namespace.
+    # Codex does not layer a plugin/version directory under these local
+    # instruction files, so all discovered roles share one namespace.
     _NAMESPACE = "codex"
 
     def build_launch_command(self, *, qualified_name: str | None) -> str:
-        # Codex has no persona CLI flag; qualified_name is carried via the
-        # pane title only. The wrapper internally invokes codex with the
-        # bypass flag and drives register/unregister around it.
-        return str(_LAUNCH_WRAPPER)
+        cmd = shlex.quote(str(_LAUNCH_WRAPPER))
+        if qualified_name is None:
+            return cmd
+
+        instructions = self.resolve_model_instructions_file(qualified_name)
+        if instructions is None:
+            raise RuntimeError(f"No Codex model instructions file for {qualified_name!r}")
+        return f"{cmd} --config model_instructions_file={shlex.quote(str(instructions))}"
 
     def agents_cache_dir(self) -> Path:
         return Path.home() / ".codex" / "skills"
+
+    def model_instructions_dir(self) -> Path:
+        return Path.home() / ".codex" / "developer_instructions"
 
     def shared_skills_dir(self) -> Path:
         return Path.home() / ".agents" / "skills"
 
     def skill_roots(self) -> list[Path]:
-        """Return every skill tree that participates in Codex discovery.
+        """Return Codex skill roots used by non-warroom tooling.
 
-        Codex uses its own ``~/.codex/skills`` tree, including nested
-        ``.system/*/SKILL.md`` entries, and this environment also exposes
-        shared skills under ``~/.agents/skills``.
+        Warroom specialist discovery uses ``model_instructions_dir()``
+        because those files can be bound at launch. Codex still has skill
+        roots for other tooling that needs to inspect available skills.
         """
         return [self.agents_cache_dir(), self.shared_skills_dir()]
 
+    def resolve_model_instructions_file(self, qualified_name: str) -> Path | None:
+        """Return the launch instructions file for a discovered Codex role."""
+        short_name = qualified_name.rsplit(":", 1)[-1]
+        root = self.model_instructions_dir()
+        direct_path = root / f"{short_name}.md"
+        if direct_path.is_file():
+            return direct_path
+        if not root.is_dir():
+            return None
+
+        for path in sorted(root.glob("*.md")):
+            fm = _parse_frontmatter(path) or {}
+            if fm.get("name") == short_name:
+                return path
+        return None
+
     def discover_agent_types(self) -> list[dict]:
-        """Walk Codex skill trees and return discovered skill definitions.
+        """Walk Codex launch instruction files and return specialist roles.
 
-        Supported layouts:
+        Supported layout:
 
-        * ``~/.codex/skills/{skill}/SKILL.md``
-        * ``~/.codex/skills/.system/{skill}/SKILL.md``
-        * ``~/.agents/skills/{skill}/SKILL.md``
+        * ``~/.codex/developer_instructions/{role}.md``
 
-        All discovered skills share the ``codex`` namespace until Codex
-        grows a plugin/version layer. When the same skill name appears in
-        multiple trees, the first root wins so local Codex skills shadow
-        shared ones.
+        These files are passed to Codex at launch through
+        ``--config model_instructions_file=<path>``, making them the Codex
+        equivalent of Claude's ``--agent <qualified-name>`` for warroom
+        specialist panes.
         """
-        result_by_name: dict[str, dict] = {}
-        for root in self.skill_roots():
-            if not root.is_dir():
-                continue
-            manifests = sorted(root.glob("*/SKILL.md"))
-            manifests.extend(sorted(root.glob(".system/*/SKILL.md")))
-            for skill_md in manifests:
-                fm = _parse_frontmatter(skill_md)
-                if not fm or "name" not in fm:
-                    continue
+        root = self.model_instructions_dir()
+        if not root.is_dir():
+            return []
 
-                short_name = fm["name"]
-                qualified = f"{self._NAMESPACE}:{short_name}"
-                if qualified in result_by_name:
-                    continue
+        result: list[dict] = []
+        for instructions_file in sorted(root.glob("*.md")):
+            fm = _parse_frontmatter(instructions_file) or {}
+            short_name = fm.get("name") or instructions_file.stem
+            qualified = f"{self._NAMESPACE}:{short_name}"
+            summary = fm.get("description") or _summarize_markdown(instructions_file)
+            if len(summary) > 200:
+                summary = summary[:197] + "..."
 
-                summary = fm.get("description", "")
-                if len(summary) > 200:
-                    summary = summary[:197] + "..."
-
-                result_by_name[qualified] = {
+            result.append(
+                {
                     "qualified_name": qualified,
                     "name": short_name,
                     "namespace": self._NAMESPACE,
@@ -112,8 +142,9 @@ class CodexRuntimeAdapter:
                     "model": fm.get("model", ""),
                     "runtime": self.runtime_id,
                 }
+            )
 
-        return [result_by_name[name] for name in sorted(result_by_name)]
+        return sorted(result, key=lambda entry: entry["qualified_name"])
 
     def lifecycle_integration(self) -> LifecycleIntegration:
         # Codex has no SessionStart/SessionEnd hook mechanism, so the

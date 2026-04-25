@@ -58,9 +58,9 @@ class RuntimeAdapter(Protocol):
     Responsibilities (from the multi-runtime architecture spec):
       * launch command construction
       * identity bootstrap (env var names)
-      * runtime capability metadata (agent cache dir, runtime id,
+      * runtime capability metadata (agent catalogue dir, runtime id,
         specialist-role support)
-      * agent/skill catalogue discovery
+      * agent catalogue discovery
       * lifecycle integration (startup/shutdown registration)
       * usage capture (token/cost sampling)
     """
@@ -71,8 +71,8 @@ class RuntimeAdapter(Protocol):
 
     ``True`` when the runtime exposes a CLI mechanism (e.g. Claude's
     ``--agent <qualified-name>`` flag) that actually binds the session
-    to a persona. ``False`` for runtimes whose skill/agent system is
-    contextual per-turn (e.g. Codex skills activated via slash command),
+    to a persona. ``False`` for runtimes whose available catalogue is
+    contextual per-turn,
     where claiming a specialist role at spawn time would persist state
     that the runtime does not enact.
 
@@ -114,7 +114,7 @@ class RuntimeAdapter(Protocol):
         ...
 
     def agents_cache_dir(self) -> Path:
-        """Return the root of this runtime's agent/skill catalogue on disk."""
+        """Return the root of this runtime's native agent catalogue on disk."""
         ...
 
     def discover_agent_types(self) -> list[dict]:
@@ -125,7 +125,7 @@ class RuntimeAdapter(Protocol):
           * ``qualified_name``: ``{namespace}:{name}``, unique within the
             catalogue returned by this adapter
           * ``name``: short name
-          * ``namespace``: logical group (plugin name, skill scope, ...)
+          * ``namespace``: logical group (plugin name, runtime scope, ...)
           * ``summary``: human-readable description, truncated to <=200
             characters
           * ``model``: optional model hint from frontmatter, or empty

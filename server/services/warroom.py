@@ -121,22 +121,232 @@ def _require_specialist_support(adapter: RuntimeAdapter) -> dict | None:
 
     warroom.spawn and add both spawn panes keyed to a specialist
     qualified_name. A runtime whose ``supports_specialist_roles`` is
-    ``False`` (e.g. Codex, whose skills are per-turn slash commands,
-    not a session-wide persona) would persist role state the runtime
-    never actually enacts. Reject such spawns rather than lie about
-    the member's role. Returns ``None`` when the runtime is
-    specialist-capable.
+    ``False`` would persist role state the runtime never actually
+    enacts. Reject such spawns rather than lie about the member's role.
+    Returns ``None`` when the runtime is specialist-capable.
     """
     if adapter.supports_specialist_roles:
         return None
     return {
         "error": (
             f"Runtime {adapter.runtime_id!r} does not support specialist-role "
-            f"spawn. Skills are activated per-turn, not bound to the "
-            f"session. Use warroom_spawn_repos for general-mode "
+            f"spawn. Use warroom_spawn_repos for general-mode "
             f"{adapter.runtime_id} panes."
         ),
     }
+
+
+def _member_repo_name(wr: sqlite3.Row, member: sqlite3.Row) -> str:
+    """Return the repo segment used in a member's canonical agent id."""
+    return member["desired_repo"] or os.path.basename(wr["cwd"])
+
+
+def _member_agent_id(wr: sqlite3.Row, member: sqlite3.Row, tmux_target: str) -> str:
+    return f"{_member_repo_name(wr, member)}:{member['desired_role']}:{tmux_target}"
+
+
+def _rewrite_pid_mapping_batch(moves: list[dict]) -> None:
+    """Rewrite PID mappings from a precomputed snapshot of identity moves."""
+    pids_dir = _db.BUS_DIR / "pids"
+    if not pids_dir.is_dir():
+        return
+
+    rewrites = []
+    old_to_new = {
+        move["old_agent_id"]: move["new_agent_id"]
+        for move in moves
+        if move["old_agent_id"] != move["new_agent_id"]
+    }
+    if not old_to_new:
+        return
+
+    for pid_file in pids_dir.iterdir():
+        if not pid_file.is_file():
+            continue
+        try:
+            current_agent_id = pid_file.read_text().strip()
+        except OSError:
+            continue
+        if current_agent_id in old_to_new:
+            rewrites.append((pid_file, old_to_new[current_agent_id]))
+
+    for pid_file, new_agent_id in rewrites:
+        try:
+            pid_file.write_text(new_agent_id)
+        except OSError:
+            continue
+
+
+def _merge_directory(src: Path, dst: Path) -> None:
+    """Merge files from src into dst without overwriting existing files."""
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        target = dst / item.name
+        if item.is_dir():
+            _merge_directory(item, target)
+            with contextlib.suppress(OSError):
+                item.rmdir()
+            continue
+
+        final_target = target
+        while final_target.exists():
+            final_target = target.with_name(f"{target.stem}-{_db._new_member_id()}{target.suffix}")
+        try:
+            item.rename(final_target)
+        except OSError:
+            continue
+    with contextlib.suppress(OSError):
+        src.rmdir()
+
+
+def _migrate_inbox_mapping_batch(moves: list[dict]) -> None:
+    """Move unread and archived mail from old agent ids to new agent ids."""
+    old_to_new = {
+        move["old_agent_id"]: move["new_agent_id"]
+        for move in moves
+        if move["old_agent_id"] != move["new_agent_id"]
+    }
+    if not old_to_new:
+        return
+
+    staged = []
+    for old_agent_id, new_agent_id in old_to_new.items():
+        old_inbox = _db.INBOX_DIR / old_agent_id
+        if not old_inbox.is_dir():
+            continue
+        temp_inbox = _db.INBOX_DIR / f".rekey-{_db._new_member_id()}"
+        try:
+            old_inbox.rename(temp_inbox)
+        except OSError:
+            continue
+        staged.append((temp_inbox, _db.INBOX_DIR / new_agent_id))
+
+    for temp_inbox, new_inbox in staged:
+        if not new_inbox.exists():
+            with contextlib.suppress(OSError):
+                temp_inbox.rename(new_inbox)
+            if temp_inbox.exists():
+                _merge_directory(temp_inbox, new_inbox)
+            continue
+        _merge_directory(temp_inbox, new_inbox)
+
+
+def _find_agent_registration(
+    conn: sqlite3.Connection,
+    *,
+    old_agent_id: str,
+    old_tmux_target: str,
+    desired_role: str,
+) -> sqlite3.Row | None:
+    """Find the registry row that belongs to a member before reflow."""
+    row = conn.execute(
+        "SELECT rowid AS registry_rowid, * FROM agents WHERE agent_id = ?",
+        (old_agent_id,),
+    ).fetchone()
+    if row is None and old_tmux_target:
+        row = conn.execute(
+            "SELECT rowid AS registry_rowid, * FROM agents WHERE tmux_target = ? AND agent_type = ?",
+            (old_tmux_target, desired_role),
+        ).fetchone()
+    return row
+
+
+def _refresh_warroom_member_targets(conn: sqlite3.Connection, wr: sqlite3.Row) -> int:
+    """Reconcile persisted member identity against stable tmux pane ids."""
+    now = _db._now()
+    updated = 0
+    members = conn.execute(
+        "SELECT * FROM warroom_members WHERE warroom_id = ? ORDER BY spawn_order",
+        (wr["warroom_id"],),
+    ).fetchall()
+
+    moves = []
+    for member in members:
+        try:
+            current_target = gateway.target_for_pane(member["pane_id"])
+        except RuntimeError:
+            continue
+
+        old_target = member["tmux_target"]
+        old_agent_id = member["agent_instance_id"] or _member_agent_id(wr, member, old_target)
+        new_agent_id = _member_agent_id(wr, member, current_target)
+        registry_row = _find_agent_registration(
+            conn,
+            old_agent_id=old_agent_id,
+            old_tmux_target=old_target,
+            desired_role=member["desired_role"],
+        )
+        moves.append(
+            {
+                "member": member,
+                "old_target": old_target,
+                "current_target": current_target,
+                "old_agent_id": old_agent_id,
+                "new_agent_id": new_agent_id,
+                "registry_rowid": registry_row["registry_rowid"] if registry_row else None,
+            }
+        )
+
+    staged_rowids: set[int] = set()
+    for move in moves:
+        rowid = move["registry_rowid"]
+        if rowid is None or rowid in staged_rowids:
+            continue
+        staged_rowids.add(rowid)
+        temp_agent_id = f"__helioy_rekey__:{rowid}:{_db._new_member_id()}"
+        conn.execute(
+            "UPDATE agents SET agent_id = ? WHERE rowid = ?",
+            (temp_agent_id, rowid),
+        )
+
+    rekeyed_rowids: set[int] = set()
+    for move in moves:
+        member = move["member"]
+        rowid = move["registry_rowid"]
+        registry_rekeyed = rowid is not None
+        if rowid is not None and rowid not in rekeyed_rowids:
+            conn.execute(
+                "UPDATE agents "
+                "SET agent_id = ?, tmux_target = ?, agent_type = ?, runtime = ? "
+                "WHERE rowid = ?",
+                (
+                    move["new_agent_id"],
+                    move["current_target"],
+                    member["desired_role"],
+                    member["desired_runtime"],
+                    rowid,
+                ),
+            )
+            rekeyed_rowids.add(rowid)
+
+        with contextlib.suppress(RuntimeError):
+            gateway.set_pane_title(member["pane_id"], move["new_agent_id"])
+
+        next_agent_id = move["new_agent_id"] if registry_rekeyed else None
+        next_state = "active" if next_agent_id else "pending"
+        if (
+            move["old_target"] == move["current_target"]
+            and member["agent_instance_id"] == next_agent_id
+            and member["state"] == next_state
+        ):
+            continue
+
+        conn.execute(
+            "UPDATE warroom_members "
+            "SET tmux_target = ?, agent_instance_id = ?, state = ?, updated_at = ? "
+            "WHERE warroom_member_id = ?",
+            (
+                move["current_target"],
+                next_agent_id,
+                next_state,
+                now,
+                member["warroom_member_id"],
+            ),
+        )
+        updated += 1
+    _rewrite_pid_mapping_batch(moves)
+    _migrate_inbox_mapping_batch(moves)
+    return updated
 
 
 # ── Service operations ────────────────────────────────────────────────────────
@@ -547,6 +757,17 @@ def add(*, name: str, agent: str, cwd: str = "", runtime: str = "") -> dict:
                 is_first=False,
                 layout=wr["layout"],
                 runtime=runtime_id,
+                launch=False,
+            )
+            _refresh_warroom_member_targets(conn, wr)
+            pane_info["tmux_target"] = gateway.target_for_pane(pane_info["pane_id"])
+            pane_info = gateway.launch_pane(
+                pane_id=pane_info["pane_id"],
+                cwd=use_cwd,
+                agent_type=agent_def["name"],
+                qualified_name=qn,
+                runtime=runtime_id,
+                tmux_target=pane_info["tmux_target"],
             )
         except RuntimeError as e:
             return {"error": f"Spawn failed: {e}"}

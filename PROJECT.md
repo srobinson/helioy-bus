@@ -281,7 +281,7 @@ check` for lint, hook lint, and Python type-checking across `server/`, plus
 
 ### Specialist-role gating lives at the service boundary
 
-`warroom.spawn` and `warroom.add` call `_require_specialist_support(adapter)` at the service layer, not inside `TmuxGateway`. The gateway is the low-level tmux wrapper and is intentionally runtime-agnostic; specialist support is a semantic property of the runtime adapter (e.g., Codex skills are per-turn slash commands, not a session-wide persona). Keeping the check adjacent to the adapter lookup prevents the gateway from growing runtime awareness.
+`warroom.spawn` and `warroom.add` call `_require_specialist_support(adapter)` at the service layer, not inside `TmuxGateway`. The gateway is the low-level tmux wrapper and is intentionally runtime-agnostic; specialist support is a semantic property of the runtime adapter. Claude binds specialists through `--agent <qualified-name>`. Codex binds specialists by passing `--config model_instructions_file=<path>` through the Codex launch wrapper for roles discovered under `~/.codex/developer_instructions/`. Keeping the check adjacent to the adapter lookup prevents the gateway from growing runtime awareness.
 
 ### token-capture.sh shells to tmux directly
 

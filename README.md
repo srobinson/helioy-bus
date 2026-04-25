@@ -51,7 +51,7 @@ The repo also ships `helioy-warroom`, a companion MCP server for multi-agent orc
 
 | Tool | Purpose |
 |------|---------|
-| `warroom_discover` | Discover agent and skill catalogues across registered runtimes |
+| `warroom_discover` | Discover launchable agent catalogues across registered runtimes |
 | `warroom_spawn_repos` | Spawn one general-purpose pane per Helioy repo |
 | `warroom_spawn` | Spawn a named warroom with runtime-scoped agent validation |
 | `warroom_status` | Return live warroom rows plus member registration and liveness state |
