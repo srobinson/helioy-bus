@@ -10,7 +10,7 @@ Claude Code runs as isolated stdio processes. Each session has no awareness of o
 
 Two MCP servers that use the filesystem as shared memory and tmux as the notification layer.
 
-**Bus server** (7 tools): Agent registry, message delivery, identity resolution. Agents register in a shared SQLite database. Messages are atomic JSON files dropped into per-agent inbox directories. A tmux keystroke nudge wakes idle recipients.
+**Bus server** (8 tools): Agent registry, message delivery, identity resolution. Agents register in a shared SQLite database. Messages are atomic JSON files dropped into per-agent inbox directories. A tmux keystroke nudge wakes idle recipients. Agents can also send direct tmux nudges when no durable inbox record is needed.
 
 **Warroom server** (9 tools): Multi-agent orchestration. Spawns coordinated agent layouts in tmux windows with specialist roles (backend-engineer, clinical-reviewer, etc.). Manages lifecycle, supports saved presets.
 
@@ -31,7 +31,7 @@ No central daemon. Every Claude Code instance spawns its own bus process. They c
 
 **Addressing**: Direct (`to="agent-id"`), role-based (`to="role:backend-engineer"`), or broadcast (`to="*"`).
 
-**Nudging**: Literal text injection into tmux panes. Throttled to 30s per recipient. Handles copy-mode. The recipient's mail skill triggers `get_messages` on receiving the nudge text.
+**Nudging**: Literal text injection into tmux panes. Mailbox nudges are throttled to 30s per recipient. Direct nudges send caller provided text without mailbox storage. Handles copy-mode.
 
 **Warroom**: A tmux window with multiple Claude Code agents working in coordination. Spawned via MCP tools or the legacy `warroom.sh` script. Each pane runs one specialist agent.
 

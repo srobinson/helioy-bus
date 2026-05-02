@@ -43,6 +43,7 @@ PRESET_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,49}$")
 
 _MESSAGING_INSTRUCTION = (
     "Send messages to warroom members individually by agent_id. "
+    "Use nudge_message with individual agent_ids for transient tmux only prompts. "
     "Never use to:'*' or reply_to:'*' as these broadcast to every "
     "agent on the bus, not just this warroom. Use warroom_status to "
     "discover agent_ids once members register."

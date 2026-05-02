@@ -181,6 +181,34 @@ def send_message(
 
 
 @mcp.tool()
+def nudge_message(to: str, content: str) -> dict:
+    """Send a message directly to another agent's tmux pane.
+
+    This bypasses mailbox storage and types the content into the
+    recipient pane with tmux send-keys. Use it for lightweight
+    coordination prompts when no durable inbox record is needed.
+
+    Sender identity is resolved automatically from the calling agent's
+    registration and is only used to exclude the caller from role and
+    broadcast addressing.
+
+    Args:
+        to: Recipient agent_id. Use "*" to nudge all registered agents.
+            Use "role:<type>" to nudge all agents with that agent_type.
+        content: Text to type into each recipient pane and submit.
+
+    Returns:
+        {"nudged": bool, "recipients": [agent_id, ...],
+         "skipped": [{"agent_id": str, "reason": str}, ...]}
+    """
+    return message.nudge_direct(
+        sender_id=_self_agent_id(),
+        to=to,
+        content=content,
+    )
+
+
+@mcp.tool()
 def get_messages(agent_id: str = "", topic: str = "") -> list[dict]:
     """Return unread messages for the calling agent, archiving them on read.
 

@@ -147,6 +147,7 @@ def test_warroom_spawn_includes_messaging_guidance(fake_plugins, monkeypatch):
     assert "messaging" in result
     msg = result["messaging"]
     assert "Never use" in msg["instruction"]
+    assert "nudge_message" in msg["instruction"]
     assert "*" in msg["instruction"]
     assert "warroom_status" in msg["instruction"]
     assert msg["member_types"] == [
@@ -189,6 +190,7 @@ def test_warroom_spawn_repos_includes_messaging_guidance(monkeypatch, tmp_path):
     assert "messaging" in result
     msg = result["messaging"]
     assert "Never use" in msg["instruction"]
+    assert "nudge_message" in msg["instruction"]
     assert "*" in msg["instruction"]
 
 

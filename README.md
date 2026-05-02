@@ -6,7 +6,7 @@ Inter-agent message bus for coding-agent runtimes such as Claude Code and Codex.
 
 Each runtime instance spawns `helioy-bus` as an MCP server over stdio. Shared state lives in `~/.helioy/bus/`: a SQLite registry for agent presence and file-based mailboxes for message delivery. Any agents sharing the same filesystem share the same bus.
 
-Messages are delivered as atomic JSON files (temp + rename) to prevent partial reads. Recipients may be woken via tmux `send-keys` nudges when their runtime supports that path. Nudges are currently Claude-only and are throttled to one per 30 seconds per recipient.
+Messages are delivered as atomic JSON files (temp + rename) to prevent partial reads. Recipients may be woken via tmux `send-keys` nudges when their runtime supports that path. Mailbox nudges are throttled to one per 30 seconds per recipient. Direct `nudge_message` calls send tmux text without writing mailbox files.
 
 ## Setup
 
@@ -43,6 +43,7 @@ The proxy provides hot-reload during development. For production, point directly
 | `list_agents` | List registered agents with optional tmux session/window filtering |
 | `heartbeat` | Update liveness timestamp for an agent |
 | `send_message` | Send a message to an agent, a role, or broadcast to all |
+| `nudge_message` | Send direct tmux text to an agent, a role, or broadcast |
 | `get_messages` | Read and archive unread messages from an agent's inbox |
 
 ## Warroom MCP Tools

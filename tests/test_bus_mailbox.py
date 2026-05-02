@@ -156,6 +156,24 @@ def test_send_message_nudges_live_pane(set_sender):
     assert result["nudged"] is True
 
 
+def test_nudge_message_sends_direct_tmux_text_without_mailbox(set_sender):
+    import server._db as _db_mod
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/live", tmux_target="main:0.0", agent_id="live:main:0.0")
+    set_sender("sender")
+    with (
+        patch.object(gateway, "pane_alive", return_value=True) as mock_alive,
+        patch.object(gateway, "nudge", return_value=True) as mock_nudge,
+    ):
+        result = bm.nudge_message(to="live:main:0.0", content="status please")
+
+    assert result == {"nudged": True, "recipients": ["live:main:0.0"], "skipped": []}
+    mock_alive.assert_called_once_with("main:0.0")
+    mock_nudge.assert_called_once_with("main:0.0", runtime="claude", content="status please")
+    assert list((_db_mod.INBOX_DIR / "live:main:0.0").glob("*.json")) == []
+
+
 def test_send_message_nudges_codex_recipient(set_sender, monkeypatch):
     """Codex panes honor tmux send-keys when the submit uses hex 0d,
     so codex recipients receive the same nudge path as claude. The

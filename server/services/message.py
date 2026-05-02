@@ -214,6 +214,55 @@ def send(
     }
 
 
+def nudge_direct(*, sender_id: str, to: str, content: str) -> dict:
+    """Send a direct tmux message without writing mailbox files."""
+    if not content:
+        return {
+            "nudged": False,
+            "recipients": [],
+            "skipped": [],
+            "error": "content is required",
+        }
+
+    with _db.db() as conn:
+        recipients, error = _resolve_recipients(conn, sender_id=sender_id, to=to)
+    if error:
+        return {
+            "nudged": False,
+            "recipients": [],
+            "skipped": [],
+            "error": error["error"],
+        }
+
+    nudged_targets: list[str] = []
+    skipped: list[dict] = []
+
+    for recipient in recipients:
+        target_id = recipient["agent_id"]
+        tmux_target = recipient.get("tmux_target", "")
+        runtime = recipient.get("runtime", "")
+
+        if not tmux_target:
+            skipped.append({"agent_id": target_id, "reason": "no_tmux_target"})
+            continue
+        if runtime not in _NUDGEABLE_RUNTIMES:
+            skipped.append({"agent_id": target_id, "reason": "unsupported_runtime"})
+            continue
+        if not gateway.pane_alive(tmux_target):
+            skipped.append({"agent_id": target_id, "reason": "pane_not_alive"})
+            continue
+        if gateway.nudge(tmux_target, runtime=runtime, content=content):
+            nudged_targets.append(target_id)
+            continue
+        skipped.append({"agent_id": target_id, "reason": "tmux_send_failed"})
+
+    return {
+        "nudged": bool(nudged_targets),
+        "recipients": nudged_targets,
+        "skipped": skipped,
+    }
+
+
 def read(*, agent_id: str, topic: str = "") -> list[dict]:
     """Return unread messages for the agent, archiving them on read.
 

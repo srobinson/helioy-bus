@@ -229,6 +229,23 @@ def test_nudge_skips_cancel_when_pane_not_in_copy_mode():
     assert commands == ["display-message", "send-keys", "send-keys", "send-keys"]
 
 
+def test_nudge_can_send_custom_text():
+    gw = TmuxGateway()
+    responses = [
+        (b"0\n", 0),   # not in copy-mode
+        (b"", 0),      # send-keys -l
+        (b"", 0),      # send-keys -H 0d
+        (b"", 0),      # send-keys Enter
+    ]
+    with patch(
+        "server._tmux.subprocess.run", side_effect=_scripted_run(responses)
+    ) as mock_run:
+        assert gw.nudge("main:1.0", content="status please") is True
+
+    calls = [call.args[0] for call in mock_run.call_args_list]
+    assert calls[1][1:] == ["send-keys", "-t", "main:1.0", "-l", "status please"]
+
+
 def test_nudge_returns_false_when_mode_check_fails():
     gw = TmuxGateway()
     exc = subprocess.TimeoutExpired(cmd=["tmux"], timeout=3)
