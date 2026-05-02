@@ -108,8 +108,8 @@ class TmuxGateway:
 
     # --- nudging ---
 
-    def nudge(self, tmux_target: str, runtime: str = "") -> bool:
-        """Send a wake-up keystroke to an idle agent session.
+    def nudge(self, tmux_target: str, runtime: str = "", content: str = "you have mail!") -> bool:
+        """Send a text keystroke message to an agent session.
 
         Runtime-neutral three-step submit: type the text literally,
         commit a hex carriage return to prime the input buffer, then
@@ -135,7 +135,7 @@ class TmuxGateway:
         if mode == "1":
             self._run_silent("send-keys", "-t", tmux_target, "-X", "cancel", timeout=3)
             _db._dbg(f"nudge: exited copy-mode on {tmux_target!r}")
-        if not self._run_silent("send-keys", "-t", tmux_target, "-l", "you have mail!", timeout=3):
+        if not self._run_silent("send-keys", "-t", tmux_target, "-l", content, timeout=3):
             _db._dbg(f"nudge: target={tmux_target!r} text send failed")
             return False
         if not self._run_silent("send-keys", "-t", tmux_target, "-H", "0d", timeout=3):

@@ -27,7 +27,7 @@ Each runtime instance spawns its own helioy-bus process (and optionally a helioy
 
 1. **SQLite registry** (`registry.db`): Agents register on startup and are pruned lazily when their tmux pane dies. WAL mode enables concurrent reads across processes.
 2. **File-based mailboxes** (`inbox/{agent_id}/*.json`): Messages are atomic JSON files written via temp + rename. Read messages move to `inbox/{agent_id}/archive/` with 7-day TTL.
-3. **tmux nudges**: When a message arrives, the bus may send `"you have mail!"` + Enter to a known Claude recipient's tmux pane. Nudges are throttled (30s per recipient), suppressed for unsupported runtimes, and handle copy-mode gracefully.
+3. **tmux nudges**: When a message arrives, the bus may send `"you have mail!"` + Enter to a known recipient's tmux pane. Mailbox nudges are throttled (30s per recipient), suppressed for unsupported runtimes, and handle copy-mode gracefully. Direct nudges can also send caller provided text without writing mailbox files.
 4. **Warroom orchestration**: Spawns coordinated agent layouts in tmux windows, manages lifecycle, and supports presets for repeatable configurations.
 
 ## File Structure
@@ -120,7 +120,11 @@ Delivers a message to one or more agents. Supports three addressing modes:
 
 Each delivery writes an atomic JSON file to the recipient's inbox directory. The payload includes `id`, `from`, `to`, `reply_to`, `topic`, `content`, and `sent_at`.
 
-After delivery, the bus optionally sends a tmux nudge (literal keystroke injection) to wake idle recipients when the recipient runtime supports that path. Nudges are currently Claude-only. They are throttled to once per 30 seconds per recipient, with re-nudging allowed while unread messages remain. Copy-mode is detected and exited before sending keystrokes.
+After delivery, the bus optionally sends a tmux nudge (literal keystroke injection) to wake idle recipients when the recipient runtime supports that path. Mailbox nudges are throttled to once per 30 seconds per recipient, with re-nudging allowed while unread messages remain. Copy-mode is detected and exited before sending keystrokes.
+
+### nudge_message
+
+Sends caller provided text directly to one or more agents through tmux. Supports the same addressing modes as `send_message`, but does not create inbox files or durable message records. Use this for transient coordination prompts.
 
 ### get_messages
 
