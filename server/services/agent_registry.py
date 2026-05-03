@@ -94,12 +94,18 @@ def register(
     return {"agent_id": agent_id, "registered_at": now}
 
 
-def list_active(*, tmux_filter: str = "") -> list[dict]:
+def list_active(*, tmux_filter: str = "", cwd_basename: str = "") -> list[dict]:
     """Return all registered agents.
 
     Observational only. Reconciliation (eviction of dead panes / dead
     PIDs) is the caller's responsibility via
     `reconciliation.prune_dead_agents()`.
+
+    Args:
+        tmux_filter: Optional tmux target prefix (e.g. "main" or "main:0")
+                     pushed down as a SQL LIKE.
+        cwd_basename: Optional last-path-segment filter applied in Python
+                     after the SQL fetch. Composes with `tmux_filter`.
     """
     with _db.db() as conn:
         if tmux_filter:
@@ -111,9 +117,13 @@ def list_active(*, tmux_filter: str = "") -> list[dict]:
         else:
             rows = conn.execute("SELECT * FROM agents ORDER BY registered_at ASC").fetchall()
 
+    cwd_basename = os.path.basename(os.path.normpath(cwd_basename)) if cwd_basename else ""
+
     result = []
     for row in rows:
         a = dict(row)
+        if cwd_basename and os.path.basename(os.path.normpath(a["cwd"])) != cwd_basename:
+            continue
         if a.get("profile"):
             with contextlib.suppress(json.JSONDecodeError, TypeError):
                 a["profile"] = json.loads(a["profile"])

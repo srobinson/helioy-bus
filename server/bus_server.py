@@ -92,7 +92,7 @@ def register_agent(
 
 
 @mcp.tool()
-def list_agents(tmux_filter: str = "") -> list[dict]:
+def list_agents(tmux_filter: str = "", cwd_basename: str = "") -> list[dict]:
     """List all registered agents, lazily pruning dead tmux panes.
 
     Args:
@@ -101,13 +101,17 @@ def list_agents(tmux_filter: str = "") -> list[dict]:
                      "2:1" narrows to window 1 of session 2,
                      "main" lists agents in the session named "main".
                      Omit to list all agents.
+        cwd_basename: Optional working directory basename filter. Returns
+                      all agents whose registered cwd's last path segment
+                      equals this value (e.g. "api" matches "/tmp/one/api"
+                      and "/tmp/two/api"). May be combined with tmux_filter.
 
     Returns a list of agent cards with: agent_id, cwd, tmux_target,
     pid, registered_at, last_seen. Agents whose tmux pane no longer
     exists are removed from the registry before returning.
     """
     reconciliation.prune_dead_agents()
-    return agent_registry.list_active(tmux_filter=tmux_filter)
+    return agent_registry.list_active(tmux_filter=tmux_filter, cwd_basename=cwd_basename)
 
 
 @mcp.tool()

@@ -40,7 +40,7 @@ The proxy provides hot-reload during development. For production, point directly
 | `whoami` | Return the caller's identity record from the registry |
 | `register_agent` | Register a runtime instance on the bus |
 | `unregister_agent` | Remove an agent from the registry |
-| `list_agents` | List registered agents with optional tmux session/window filtering |
+| `list_agents` | List registered agents with optional tmux and cwd basename filtering |
 | `heartbeat` | Update liveness timestamp for an agent |
 | `send_message` | Send a message to an agent, a role, or broadcast to all |
 | `nudge_message` | Send direct tmux text to an agent, a role, or broadcast |

@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from server._tmux import gateway
 
-
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 
@@ -159,6 +158,33 @@ def test_list_agents_filter_by_session_and_window():
     assert "a:work:0.0" in ids
     assert "b:work:0.1" in ids
     assert "c:work:1.0" not in ids
+
+
+def test_list_agents_filter_by_cwd_basename_surfaces_all_matches():
+    """cwd_basename returns every matching dirname, even with different full cwd."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/one/api", agent_id="one-api")
+    bm.register_agent(pwd="/tmp/two/api", agent_id="two-api")
+    bm.register_agent(pwd="/tmp/worker", agent_id="worker")
+
+    agents = bm.list_agents(cwd_basename="api")
+
+    assert [a["agent_id"] for a in agents] == ["one-api", "two-api"]
+    assert [a["cwd"] for a in agents] == ["/tmp/one/api", "/tmp/two/api"]
+
+
+def test_list_agents_cwd_basename_combines_with_tmux_filter():
+    """tmux_filter and cwd_basename are intersected when both are supplied."""
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/one/api", tmux_target="work:0.0", agent_id="one-api")
+    bm.register_agent(pwd="/tmp/two/api", tmux_target="other:0.0", agent_id="two-api")
+
+    with patch.object(gateway, "pane_alive", return_value=True):
+        agents = bm.list_agents(tmux_filter="work", cwd_basename="api")
+
+    assert [a["agent_id"] for a in agents] == ["one-api"]
 
 
 def test_unregister_agent():
