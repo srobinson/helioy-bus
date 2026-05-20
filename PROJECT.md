@@ -104,7 +104,7 @@ Removes an agent from the registry by ID. Called on session teardown via the `bu
 
 ### list_agents
 
-Returns all registered agents, including their runtime. Performs lazy liveness pruning by checking whether each agent's tmux pane still exists. Supports `tmux_filter` to scope results to a tmux session or session:window.
+Returns all registered agents, including their runtime. Performs lazy liveness pruning by checking whether each agent's tmux pane still exists. Supports `tmux_filter` to scope results to a tmux session or session:window, and `cwd_basename` to return every agent whose registered working directory has that basename.
 
 ### heartbeat
 
