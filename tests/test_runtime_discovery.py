@@ -186,6 +186,59 @@ def test_warroom_spawn_rejects_agent_not_in_selected_runtime(
     assert details and details[0]["agent"] == "codex:agent-browser"
 
 
+def test_warroom_spawn_uses_qualified_runtime_when_runtime_is_omitted(
+    fake_plugins, fake_codex_instructions, monkeypatch
+):
+    """Qualified union results are launchable without a separate add call."""
+    import server._db as _db_mod
+    import server._tmux as tmux_mod
+    import server.services.warroom as warroom_service
+
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+    monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
+
+    spawned: list[tuple[str, str]] = []
+
+    def fake_spawn(**kw):
+        index = len(spawned)
+        spawned.append((kw["qualified_name"], kw["runtime"]))
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": f"alp:1.{index}",
+            "pane_id": f"%{index}",
+            "runtime": kw["runtime"],
+        }
+
+    monkeypatch.setattr(tmux_mod.gateway, "spawn_pane", fake_spawn)
+
+    result = warroom_service.spawn(
+        name="mixed-runtime",
+        agents=["backend-engineer", "codex:agent-browser"],
+        cwd="/tmp/r",
+    )
+
+    assert "error" not in result
+    assert spawned == [
+        ("helioy-tools:backend-engineer", "claude"),
+        ("codex:agent-browser", "codex"),
+    ]
+
+    with _db_mod.db() as conn:
+        rows = [
+            (row["desired_runtime"], row["desired_role"])
+            for row in conn.execute(
+                "SELECT desired_runtime, desired_role FROM warroom_members "
+                "WHERE warroom_id = ? ORDER BY spawn_order",
+                ("mixed-runtime",),
+            )
+        ]
+    assert rows == [
+        ("claude", "helioy-tools:backend-engineer"),
+        ("codex", "codex:agent-browser"),
+    ]
+
+
 def test_resolve_agent_type_scopes_to_codex_catalogue(fake_plugins, fake_codex_instructions):
     """The mirror of ``_resolve_agent_type`` scoping to Codex-only roles.
 

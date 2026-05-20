@@ -114,7 +114,8 @@ def warroom_spawn(
         layout: tmux layout algorithm (tiled, even-horizontal, even-vertical,
                 main-horizontal, main-vertical). Default: tiled.
         runtime: Runtime id for all spawned panes (e.g. "claude", "codex").
-            Empty string uses the default adapter.
+            Empty string uses the default adapter for short names and the
+            discovered runtime for qualified names like "codex:agent-browser".
 
     Returns:
         {

@@ -16,6 +16,7 @@ from server.runtimes import (
 )
 from server.runtimes.claude import CLAUDE
 from server.runtimes.codex import CODEX
+from server.services import warroom_agents
 
 
 # ── Claude adapter: identity metadata ────────────────────────────────────────
@@ -224,12 +225,12 @@ def test_warroom_spawn_records_runtime_from_adapter(monkeypatch):
         "model": "opus",
     }
     monkeypatch.setattr(
-        warroom_service,
+        warroom_agents,
         "_scan_agent_types",
         lambda runtime_id=None: [fake_agent],
     )
     monkeypatch.setattr(
-        warroom_service,
+        warroom_agents,
         "_resolve_agent_type",
         lambda name, runtime_id=None: fake_agent if name in {"bar", "foo:bar"} else None,
     )
@@ -546,23 +547,6 @@ def test_warroom_spawn_rejects_unknown_runtime(monkeypatch):
     import server._tmux as tmux_mod
     import server.services.warroom as warroom_service
 
-    fake_agent = {
-        "qualified_name": "foo:bar",
-        "name": "bar",
-        "namespace": "foo",
-        "summary": "",
-        "model": "opus",
-    }
-    monkeypatch.setattr(
-        warroom_service,
-        "_scan_agent_types",
-        lambda runtime_id=None: [fake_agent],
-    )
-    monkeypatch.setattr(
-        warroom_service,
-        "_resolve_agent_type",
-        lambda name, runtime_id=None: fake_agent if name in {"bar", "foo:bar"} else None,
-    )
     monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
 
@@ -670,6 +654,8 @@ def test_warroom_add_accepts_codex_specialist_with_instruction_file(
             else None
         ),
     )
+    monkeypatch.setattr(warroom_agents, "_scan_agent_types", warroom_service._scan_agent_types)
+    monkeypatch.setattr(warroom_agents, "_resolve_agent_type", warroom_service._resolve_agent_type)
     monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
 
     pane_counter = [0]

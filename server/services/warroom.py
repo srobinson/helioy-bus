@@ -29,6 +29,12 @@ from server.runtimes import (
     for_id,
     registered_adapters,
 )
+from server.services.warroom_agents import (
+    build_suggestions as _build_suggestions,
+)
+from server.services.warroom_agents import (
+    resolve_spawn_agents,
+)
 
 VALID_LAYOUTS = {
     "tiled",
@@ -80,15 +86,6 @@ def kill_warrooms(conn: sqlite3.Connection, name: str, kill_all: bool) -> list[s
         conn.execute("DELETE FROM warrooms WHERE warroom_id = ?", (wid,))
         killed.append(wid)
     return killed
-
-
-def _build_suggestions(needle: str, all_types: list[dict], limit: int = 5) -> list[str]:
-    q = needle.lower()
-    return [
-        a["qualified_name"]
-        for a in all_types
-        if q in a["name"].lower() or q in a.get("summary", "").lower()
-    ][:limit]
 
 
 def _short_role_name(role: str) -> str:
@@ -521,27 +518,15 @@ def spawn(
     assert adapter is not None
     if cap_err := _require_specialist_support(adapter):
         return cap_err
-    runtime_id = adapter.runtime_id
 
     if not cwd:
         cwd = os.getcwd()
 
-    resolved = []
-    errors = []
-    all_types = _scan_agent_types(runtime_id)
-    for agent_name in agents:
-        agent_def = _resolve_agent_type(agent_name, runtime_id)
-        if agent_def is None:
-            errors.append(
-                {
-                    "agent": agent_name,
-                    "error": "Unknown agent type",
-                    "suggestions": _build_suggestions(agent_name, all_types),
-                }
-            )
-        else:
-            resolved.append(agent_def)
-
+    resolved, errors = resolve_spawn_agents(
+        agents,
+        runtime=runtime,
+        default_adapter=adapter,
+    )
     if errors:
         return {"error": "Unknown agent types", "details": errors}
 
@@ -552,7 +537,7 @@ def spawn(
     now = _db._now()
     members = []
     spawn_errors = []
-    for i, agent_def in enumerate(resolved):
+    for i, (agent_def, runtime_id) in enumerate(resolved):
         try:
             pane_info = gateway.spawn_pane(
                 session=session,
@@ -564,6 +549,7 @@ def spawn(
                 layout=layout,
                 runtime=runtime_id,
             )
+            pane_info.setdefault("runtime", runtime_id)
             members.append(pane_info)
         except RuntimeError as e:
             spawn_errors.append(
@@ -585,10 +571,11 @@ def spawn(
         )
         for order, m in enumerate(members):
             qn = m["qualified_name"]
+            member_runtime_id = m["runtime"]
             member_id = insert_warroom_member(
                 conn,
                 warroom_id=name,
-                runtime_id=runtime_id,
+                runtime_id=member_runtime_id,
                 desired_role=qn,
                 desired_repo=None,
                 spawn_order=order,
@@ -600,7 +587,7 @@ def spawn(
                 m,
                 warroom_member_id=member_id,
                 desired_role=qn,
-                desired_runtime=runtime_id,
+                desired_runtime=member_runtime_id,
                 spawn_order=order,
             )
 
