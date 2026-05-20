@@ -93,6 +93,22 @@ def test_codex_adapter_discover_uses_filename_when_frontmatter_is_absent(
     )
 
 
+def test_codex_adapter_uses_canonical_claude_agent_names(
+    fake_plugins, fake_codex_instructions
+):
+    """Mirrored Claude agent instructions keep their canonical qualified name."""
+    (fake_codex_instructions / "codebase-analyst.md").write_text(
+        "You analyze local codebases.\n"
+    )
+
+    agents = {a["qualified_name"]: a for a in CODEX.discover_agent_types()}
+
+    assert "helioy-tools:codebase-analyst" in agents
+    assert "codex:codebase-analyst" not in agents
+    assert agents["helioy-tools:codebase-analyst"]["namespace"] == "helioy-tools"
+    assert agents["helioy-tools:codebase-analyst"]["runtime"] == "codex"
+
+
 # ── Shared _scan_agent_types: union semantics ────────────────────────────────
 
 
@@ -251,3 +267,79 @@ def test_resolve_agent_type_scopes_to_codex_catalogue(fake_plugins, fake_codex_i
     assert agent is not None
     assert agent["qualified_name"] == "codex:agent-browser"
     assert agent["runtime"] == "codex"
+
+
+def test_warroom_add_accepts_canonical_claude_name_for_codex(
+    fake_plugins, fake_codex_instructions, monkeypatch
+):
+    """Codex can launch the mirrored helioy-tools agent persona by canonical name."""
+    import server._db as _db_mod
+    import server._tmux as tmux_mod
+    import server.services.warroom as warroom_service
+
+    (fake_codex_instructions / "codebase-analyst.md").write_text(
+        "You analyze local codebases.\n"
+    )
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+    monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
+
+    pane_counter = [0]
+
+    def fake_spawn(**kw):
+        index = pane_counter[0]
+        pane_counter[0] += 1
+        return {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": f"alp:1.{index}",
+            "pane_id": f"%{index}",
+            "runtime": kw["runtime"],
+        }
+
+    monkeypatch.setattr(tmux_mod.gateway, "spawn_pane", fake_spawn)
+    monkeypatch.setattr(
+        tmux_mod.gateway,
+        "target_for_pane",
+        lambda pane_id: {"%0": "alp:1.0", "%1": "alp:1.1"}[pane_id],
+    )
+    monkeypatch.setattr(tmux_mod.gateway, "set_pane_title", lambda pane_id, title: None)
+    monkeypatch.setattr(
+        tmux_mod.gateway,
+        "launch_pane",
+        lambda **kw: {
+            "agent_type": kw["agent_type"],
+            "qualified_name": kw["qualified_name"],
+            "tmux_target": kw["tmux_target"],
+            "pane_id": kw["pane_id"],
+            "runtime": kw["runtime"],
+        },
+    )
+
+    spawn_result = warroom_service.spawn(
+        name="canonical-codex",
+        agents=["backend-engineer"],
+        cwd="/tmp/r",
+    )
+    assert "error" not in spawn_result
+
+    add_result = warroom_service.add(
+        name="canonical-codex",
+        agent="helioy-tools:codebase-analyst",
+        runtime="codex",
+    )
+    assert "error" not in add_result
+    assert add_result["added"]["qualified_name"] == "helioy-tools:codebase-analyst"
+
+    with _db_mod.db() as conn:
+        rows = [
+            (row["desired_runtime"], row["desired_role"])
+            for row in conn.execute(
+                "SELECT desired_runtime, desired_role FROM warroom_members "
+                "WHERE warroom_id = ? ORDER BY spawn_order",
+                ("canonical-codex",),
+            )
+        ]
+    assert rows == [
+        ("claude", "helioy-tools:backend-engineer"),
+        ("codex", "helioy-tools:codebase-analyst"),
+    ]

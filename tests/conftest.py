@@ -101,6 +101,9 @@ def fake_plugins(tmp_path, monkeypatch):
     (ht / "frontend-engineer.md").write_text(
         '---\nname: frontend-engineer\ndescription: "Builds UI components"\nmodel: sonnet\n---\n'
     )
+    (ht / "codebase-analyst.md").write_text(
+        '---\nname: codebase-analyst\ndescription: "Analyzes local codebases"\nmodel: opus\n---\n'
+    )
 
     # pr-review-toolkit agents
     prt = cache / "official" / "pr-review-toolkit" / "abc123" / "agents"

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from server.runtimes._frontmatter import _parse_frontmatter
 from server.runtimes.base import LifecycleIntegration, register
+from server.runtimes.claude import CLAUDE
 
 _PLUGIN_HOOKS = Path(__file__).resolve().parent.parent.parent / "plugin" / "hooks"
 _LAUNCH_WRAPPER = _PLUGIN_HOOKS / "codex-launch.sh"
@@ -48,6 +49,26 @@ def _summarize_markdown(path: Path) -> str:
             continue
         return line
     return ""
+
+
+def _canonical_claude_agents_by_name() -> dict[str, dict]:
+    """Return preferred Claude agent definitions keyed by short name."""
+    preferred: dict[str, dict] = {}
+    priority = {"helioy-tools": 0}
+    for agent in CLAUDE.discover_agent_types():
+        name = agent["name"]
+        current = preferred.get(name)
+        if current is None:
+            preferred[name] = agent
+            continue
+        current_rank = priority.get(current["namespace"], 100)
+        agent_rank = priority.get(agent["namespace"], 100)
+        if (agent_rank, agent["qualified_name"]) < (
+            current_rank,
+            current["qualified_name"],
+        ):
+            preferred[name] = agent
+    return preferred
 
 
 class CodexRuntimeAdapter:
@@ -125,10 +146,17 @@ class CodexRuntimeAdapter:
             return []
 
         result: list[dict] = []
+        canonical_agents = _canonical_claude_agents_by_name()
         for instructions_file in sorted(root.glob("*.md")):
             fm = _parse_frontmatter(instructions_file) or {}
             short_name = fm.get("name") or instructions_file.stem
-            qualified = f"{self._NAMESPACE}:{short_name}"
+            canonical_agent = canonical_agents.get(short_name)
+            qualified = (
+                canonical_agent["qualified_name"]
+                if canonical_agent
+                else f"{self._NAMESPACE}:{short_name}"
+            )
+            namespace = canonical_agent["namespace"] if canonical_agent else self._NAMESPACE
             summary = fm.get("description") or _summarize_markdown(instructions_file)
             if len(summary) > 200:
                 summary = summary[:197] + "..."
@@ -137,7 +165,7 @@ class CodexRuntimeAdapter:
                 {
                     "qualified_name": qualified,
                     "name": short_name,
-                    "namespace": self._NAMESPACE,
+                    "namespace": namespace,
                     "summary": summary,
                     "model": fm.get("model", ""),
                     "runtime": self.runtime_id,
