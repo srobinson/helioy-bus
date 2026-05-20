@@ -230,6 +230,35 @@ def test_codex_launch_wrapper_registers_unregisters_and_runs_codex(
     assert count == 0, "unregister trap did not remove the agent row"
 
 
+def test_codex_launch_wrapper_uses_stable_shell_for_hooks(isolated_bus, tmp_path):
+    """Hook scripts must not resolve `bash` through the session PATH."""
+    marker = tmp_path / "codex-ran.log"
+    stub_dir = _install_codex_stub(tmp_path, marker)
+
+    fake_bash_marker = tmp_path / "fake-bash-ran.log"
+    fake_bash = stub_dir / "bash"
+    fake_bash.write_text(
+        f"#!/bin/sh\nprintf fake-bash > {fake_bash_marker}\nexit 72\n"
+    )
+    fake_bash.chmod(0o755)
+
+    env = _hook_env(isolated_bus)
+    env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["/bin/bash", str(CODEX_LAUNCH)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"wrapper failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert marker.exists(), "wrapper did not invoke codex"
+    assert not fake_bash_marker.exists(), "wrapper resolved hook bash through PATH"
+
+
 def test_codex_launch_wrapper_records_codex_agent_type_in_registry(
     isolated_bus, tmp_path
 ):

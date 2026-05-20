@@ -14,6 +14,7 @@
 set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOOK_SHELL="${HELIOY_BUS_HOOK_SHELL:-/bin/bash}"
 
 # The wrapper is the live process; _self_agent_id() looks up
 # pids/<HELIOY_BUS_CODEX_PID>. Keying on $$ matches the register hook's
@@ -23,10 +24,10 @@ export HELIOY_RUNTIME=codex
 
 # Reuse the runtime-neutral register hook. It reads stdin JSON for
 # session_id; codex has no session id at wrapper-start time, so pass {}.
-bash "$HOOKS_DIR/bus-register.sh" <<< '{}'
+"$HOOK_SHELL" "$HOOKS_DIR/bus-register.sh" <<< '{}'
 
 cleanup() {
-    bash "$HOOKS_DIR/bus-unregister.sh" || true
+    "$HOOK_SHELL" "$HOOKS_DIR/bus-unregister.sh" || true
 }
 trap cleanup EXIT INT TERM
 

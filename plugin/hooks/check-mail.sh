@@ -39,7 +39,10 @@ if [[ ! -d "$MAILBOX" ]]; then
 fi
 
 # Collect unread message files (*.json, sorted lexicographically = arrival order)
-mapfile -t MSG_FILES < <(find "$MAILBOX" -maxdepth 1 -name "*.json" -type f | sort)
+MSG_FILES=()
+while IFS= read -r msg_file; do
+    MSG_FILES+=("$msg_file")
+done < <(find "$MAILBOX" -maxdepth 1 -name "*.json" -type f | sort)
 
 if [[ ${#MSG_FILES[@]} -eq 0 ]]; then
     exit 0
