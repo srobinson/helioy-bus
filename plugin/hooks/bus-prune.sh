@@ -64,6 +64,44 @@ if dead:
 conn.close()
 PYEOF
 
+# Mark warrooms killed when their tmux window no longer exists.
+# Uses parameterized queries (no string interpolation) for safety.
+_HELIOY_DB="$DB_PATH" _TMUX_BIN="$TMUX_BIN" python3 - <<'PYEOF' 2>/dev/null || true
+import sqlite3, subprocess, os
+
+db_path = os.environ["_HELIOY_DB"]
+tmux_bin = os.environ["_TMUX_BIN"]
+conn = sqlite3.connect(db_path, timeout=5)
+conn.execute("PRAGMA journal_mode=WAL")
+
+rows = conn.execute(
+    "SELECT warroom_id, tmux_session, tmux_window FROM warrooms WHERE status = 'active'"
+).fetchall()
+
+dead = []
+for warroom_id, tmux_session, tmux_window in rows:
+    try:
+        r = subprocess.run(
+            [tmux_bin, "list-panes", "-t", f"{tmux_session}:{tmux_window}"],
+            capture_output=True, timeout=3,
+        )
+        if r.returncode != 0:
+            dead.append(warroom_id)
+    except Exception:
+        dead.append(warroom_id)
+
+if dead:
+    placeholders = ",".join("?" * len(dead))
+    conn.execute(
+        f"UPDATE warrooms SET status = 'killed' "
+        f"WHERE status = 'active' AND warroom_id IN ({placeholders})",
+        dead,
+    )
+    conn.commit()
+
+conn.close()
+PYEOF
+
 # Prune PID files for processes that no longer exist.
 if [[ -d "$PIDS_DIR" ]]; then
     for pid_file in "$PIDS_DIR"/*; do
