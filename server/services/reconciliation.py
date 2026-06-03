@@ -68,6 +68,41 @@ def prune_archived_messages(agent_id: str, *, max_age_days: int = 7) -> int:
     return removed
 
 
+def reap_dead_warrooms(warroom_id: str = "") -> int:
+    """Mark active warrooms killed when their tmux window is gone.
+
+    The window is the warroom's lifecycle boundary. Individual member panes can
+    die without ending the warroom while the window remains reachable.
+    """
+    updated = 0
+    with _db.db() as conn:
+        params: tuple[str, ...] = ()
+        where = "WHERE status = 'active'"
+        if warroom_id:
+            where += " AND warroom_id = ?"
+            params = (warroom_id,)
+
+        rows = conn.execute(
+            f"""
+            SELECT warroom_id, tmux_session, tmux_window
+            FROM warrooms
+            {where}
+            """,
+            params,
+        ).fetchall()
+
+        for r in rows:
+            window_target = f"{r['tmux_session']}:{r['tmux_window']}"
+            if gateway.pane_alive(window_target):
+                continue
+            conn.execute(
+                "UPDATE warrooms SET status = ? WHERE warroom_id = ? AND status = ?",
+                ("killed", r["warroom_id"], "active"),
+            )
+            updated += 1
+    return updated
+
+
 def backfill_warroom_member_agent_ids(warroom_id: str = "") -> int:
     """Reconcile persisted member identity and state against live runtime state.
 

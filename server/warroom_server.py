@@ -182,6 +182,7 @@ def warroom_status(
          state, agent_instance_id, spawn_order, agent_type, tmux_target,
          pane_id, registered, pane_alive, created_at, updated_at, token_usage}
     """
+    reconciliation.reap_dead_warrooms(name)
     reconciliation.backfill_warroom_member_agent_ids(name)
     return warroom.status(name=name)
 

@@ -27,6 +27,7 @@ def isolated_bus(tmp_path, monkeypatch):
     monkeypatch.setattr(_db_mod, "REGISTRY_DB", bus_dir / "registry.db")
     monkeypatch.setattr(_db_mod, "INBOX_DIR", bus_dir / "inbox")
     monkeypatch.setattr(_db_mod, "PRESETS_DIR", bus_dir / "presets")
+    monkeypatch.delenv("HELIOY_BUS_AGENT_TYPE", raising=False)
     # Reset init flag so each test gets a fresh schema bootstrap
     monkeypatch.setattr(_db_mod, "_db_initialized", False)
 
