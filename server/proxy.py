@@ -34,6 +34,12 @@ PYTHON = sys.executable
 # so a slow or dead inner must never block this read indefinitely.
 INIT_REPLAY_TIMEOUT = 10.0
 
+# Max bytes in a single JSON-RPC line the proxy will buffer. asyncio's stream
+# default is 64KB, but MCP responses routinely exceed that (e.g. warroom_status
+# with no filter is ~77KB). readline() raises on a line past its limit, which
+# the forward loop would swallow and spin on, hanging the call. Size generously.
+STREAM_LIMIT = 16 * 1024 * 1024
+
 
 def _log(msg: str) -> None:
     print(f"[helioy-bus proxy] {msg}", file=sys.stderr, flush=True)
@@ -80,6 +86,7 @@ class HotReloadProxy:
             stdout=asyncio.subprocess.PIPE,
             stderr=sys.stderr,
             env=env,
+            limit=STREAM_LIMIT,
         )
 
     async def _replay_init(self) -> None:
@@ -188,7 +195,7 @@ class HotReloadProxy:
 
     async def run(self) -> None:
         loop = asyncio.get_event_loop()
-        stdin_reader = asyncio.StreamReader()
+        stdin_reader = asyncio.StreamReader(limit=STREAM_LIMIT)
         await loop.connect_read_pipe(
             lambda: asyncio.StreamReaderProtocol(stdin_reader),
             sys.stdin.buffer,

@@ -11,6 +11,8 @@ nothing, so a stuck flag or an unbounded read turns every subsequent
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 import types
 from pathlib import Path
 
@@ -103,3 +105,24 @@ async def test_watch_survives_restart_error_and_ignores_non_source(monkeypatch):
 
     await asyncio.wait_for(proxy._watch(), timeout=3)
     assert restarts == [1]
+
+
+async def test_spawn_stdout_handles_lines_over_64kb(tmp_path, monkeypatch):
+    # A single MCP response larger than asyncio's default 64KB StreamReader
+    # limit must still be forwardable. warroom_status() with no arg returns
+    # ~77KB and was hanging the proxy's forward loop on LimitOverrunError.
+    script = tmp_path / "big_inner.py"
+    script.write_text(
+        "import sys\nsys.stdout.write('x' * 100_000 + '\\n')\nsys.stdout.flush()\n"
+    )
+    # _spawn wires stderr=sys.stderr; under pytest capture that has no fileno.
+    monkeypatch.setattr(sys, "stderr", open(os.devnull, "w"))
+
+    proxy = HotReloadProxy(script)
+    await proxy._spawn()
+    try:
+        line = await asyncio.wait_for(proxy.proc.stdout.readline(), timeout=5)
+    finally:
+        proxy.proc.kill()
+        await proxy.proc.wait()
+    assert len(line) == 100_001
