@@ -114,8 +114,17 @@ def warroom_spawn(
         layout: tmux layout algorithm (tiled, even-horizontal, even-vertical,
                 main-horizontal, main-vertical). Default: tiled.
         runtime: Runtime id for all spawned panes (e.g. "claude", "codex").
-            Empty string uses the default adapter for short names and the
-            discovered runtime for qualified names like "codex:agent-browser".
+            Empty string falls back to the default adapter ("claude") for
+            short names ("backend-engineer") and plugin-namespace-qualified
+            names ("helioy-tools:codebase-analyst"). Only runtime-qualified
+            names ("codex:agent-browser") select a non-default runtime when
+            this arg is empty.
+
+            MoE composition gotcha: passing the same plugin-namespaced
+            agent twice in `agents=[...]` does NOT give you one Claude pane
+            and one Codex pane — both land on the default adapter. For MoE,
+            spawn once and then `warroom_add(..., runtime="codex")` for the
+            second pane. See helioy-bus/skills/warroom Mode 1.
 
     Returns:
         {
@@ -197,7 +206,11 @@ def warroom_add(
         cwd: Working directory for the new pane. Defaults to the warroom's
              original cwd.
         runtime: Runtime id for the new member (e.g. "claude", "codex").
-            Empty string uses the default adapter.
+            Empty string falls back to the default adapter ("claude") for
+            short and plugin-namespace-qualified names. For MoE second
+            panes, pass `runtime="codex"` explicitly — a plugin-namespaced
+            agent name like "helioy-tools:codebase-analyst" will not pick
+            codex on its own.
 
     Returns:
         {warroom_id,

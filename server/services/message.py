@@ -96,8 +96,8 @@ def _suffix_for_runtime(runtime: str) -> str:
         return ""
 
 
-def _resolve_recipients(conn, *, sender_id: str, to: str) -> tuple[list[dict], dict | None]:
-    """Look up recipients for `to`. Returns (recipients, error_dict_or_None)."""
+def _resolve_single(conn, *, sender_id: str, to: str) -> tuple[list[dict], str | None]:
+    """Resolve one address token. Returns (recipients, error_message_or_None)."""
     if to == "*":
         rows = conn.execute(
             "SELECT agent_id, tmux_target, runtime FROM agents WHERE agent_id != ?",
@@ -113,27 +113,70 @@ def _resolve_recipients(conn, *, sender_id: str, to: str) -> tuple[list[dict], d
         ).fetchall()
         recipients = [dict(r) for r in rows]
         if not recipients:
-            return [], {
-                "message_id": None,
-                "delivered": False,
-                "nudged": False,
-                "recipients": [],
-                "error": f"No agents with role '{role}' found in registry",
-            }
+            return [], f"No agents with role '{role}' found in registry"
         return recipients, None
     row = conn.execute(
         "SELECT agent_id, tmux_target, runtime FROM agents WHERE agent_id = ?",
         (to,),
     ).fetchone()
     if row is None:
-        return [], {
+        return [], f"Recipient '{to}' not found in registry"
+    return [dict(row)], None
+
+
+def _resolve_recipients(
+    conn, *, sender_id: str, to: str
+) -> tuple[list[dict], list[dict], dict | None]:
+    """Look up recipients for `to`.
+
+    `to` may be a single address (`*`, `role:X`, or an agent_id) or a
+    `;`-separated list of such addresses. Returns
+    (recipients, failed_parts, fatal_error_or_None) where `failed_parts`
+    is a list of {"to": part, "error": msg} for any address that did not
+    resolve. A fatal error is returned only when zero recipients resolved
+    across all parts.
+    """
+    parts = [p.strip() for p in to.split(";") if p.strip()]
+    if not parts:
+        return [], [], {
             "message_id": None,
             "delivered": False,
             "nudged": False,
             "recipients": [],
-            "error": f"Recipient '{to}' not found in registry",
+            "error": "Recipient address is empty",
         }
-    return [dict(row)], None
+
+    recipients: list[dict] = []
+    seen: set[str] = set()
+    failed: list[dict] = []
+
+    for part in parts:
+        resolved, err = _resolve_single(conn, sender_id=sender_id, to=part)
+        if err:
+            failed.append({"to": part, "error": err})
+            continue
+        for r in resolved:
+            if r["agent_id"] in seen:
+                continue
+            seen.add(r["agent_id"])
+            recipients.append(r)
+
+    if not recipients:
+        # Preserve original single-recipient error shape when only one
+        # address was supplied; otherwise return a combined message.
+        if len(parts) == 1:
+            error_msg = failed[0]["error"]
+        else:
+            error_msg = "; ".join(f"{f['to']}: {f['error']}" for f in failed)
+        return [], failed, {
+            "message_id": None,
+            "delivered": False,
+            "nudged": False,
+            "recipients": [],
+            "error": error_msg,
+        }
+
+    return recipients, failed, None
 
 
 def send(
@@ -155,7 +198,7 @@ def send(
         reply_to = sender_id
 
     with _db.db() as conn:
-        recipients, error = _resolve_recipients(conn, sender_id=sender_id, to=to)
+        recipients, failed, error = _resolve_recipients(conn, sender_id=sender_id, to=to)
     if error:
         return error
 
@@ -206,12 +249,15 @@ def send(
             nudged_targets.append(target_id)
             _record_nudge(target_id)
 
-    return {
+    result = {
         "message_id": message_id,
         "delivered": bool(delivered_to),
         "nudged": bool(nudged_targets),
         "recipients": delivered_to,
     }
+    if failed:
+        result["failed"] = failed
+    return result
 
 
 def nudge_direct(*, sender_id: str, to: str, content: str) -> dict:
@@ -225,7 +271,7 @@ def nudge_direct(*, sender_id: str, to: str, content: str) -> dict:
         }
 
     with _db.db() as conn:
-        recipients, error = _resolve_recipients(conn, sender_id=sender_id, to=to)
+        recipients, failed, error = _resolve_recipients(conn, sender_id=sender_id, to=to)
     if error:
         return {
             "nudged": False,
@@ -235,7 +281,9 @@ def nudge_direct(*, sender_id: str, to: str, content: str) -> dict:
         }
 
     nudged_targets: list[str] = []
-    skipped: list[dict] = []
+    skipped: list[dict] = [
+        {"agent_id": f["to"], "reason": f["error"]} for f in failed
+    ]
 
     for recipient in recipients:
         target_id = recipient["agent_id"]

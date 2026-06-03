@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from server.runtimes import (
     ClaudeRuntimeAdapter,
     CodexRuntimeAdapter,
@@ -18,9 +17,7 @@ from server.runtimes.claude import CLAUDE
 from server.runtimes.codex import CODEX
 from server.services import warroom_agents
 
-
 # ── Claude adapter: identity metadata ────────────────────────────────────────
-
 
 def test_claude_adapter_runtime_id_is_claude():
     assert CLAUDE.runtime_id == "claude"
@@ -54,7 +51,7 @@ def test_build_launch_command_role_mode_includes_agent_flag():
     assert cmd.startswith("claude ")
     assert "--dangerously-skip-permissions" in cmd
     assert "--model opus" in cmd
-    assert "--effort max" in cmd
+    assert "--effort xhigh" in cmd
     assert "--agent helioy-tools:backend-engineer" in cmd
 
 
@@ -62,7 +59,7 @@ def test_build_launch_command_repo_mode_omits_agent_flag():
     cmd = CLAUDE.build_launch_command(qualified_name=None)
     assert "--dangerously-skip-permissions" in cmd
     assert "--model opus" in cmd
-    assert "--effort max" in cmd
+    assert "--effort xhigh" in cmd
     assert "--agent" not in cmd
 
 
@@ -343,6 +340,23 @@ def test_codex_build_launch_command_adds_model_instructions_file(fake_codex_inst
     assert "--config" in role
     assert "model_instructions_file=" in role
     assert str(fake_codex_instructions / "agent-browser.md") in role
+
+
+def test_codex_build_launch_command_injects_agent_type_env(fake_codex_instructions):
+    """Specialist launch carries its role in the env.
+
+    Codex overwrites its pane title to the cwd basename after start, so the
+    pane's own SessionStart hook can no longer read the canonical title the
+    warroom set. HELIOY_BUS_AGENT_TYPE lets that re-registration reconstruct
+    the same identity instead of collapsing to general (which would evict the
+    correct row via pane ownership). A bare/general launch carries no role env.
+    """
+    role = CODEX.build_launch_command(qualified_name="codex:agent-browser")
+    assert "HELIOY_BUS_AGENT_TYPE=codex:agent-browser" in role
+    assert "model_instructions_file=" in role
+
+    bare = CODEX.build_launch_command(qualified_name=None)
+    assert "HELIOY_BUS_AGENT_TYPE" not in bare
 
 
 def test_codex_build_launch_command_resolves_frontmatter_role_name(

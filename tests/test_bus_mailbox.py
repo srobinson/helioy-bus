@@ -310,6 +310,75 @@ def test_send_message_role_creates_inbox_files(set_sender):
     assert fe_files == []
 
 
+# ── Multi-recipient ";" addressing ───────────────────────────────────────────
+
+
+def test_send_message_semicolon_delivers_to_each_recipient(set_sender):
+    import server._db as _db_mod
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/alice", agent_id="alice")
+    bm.register_agent(pwd="/tmp/bob", agent_id="bob")
+
+    set_sender("sender")
+    result = bm.send_message(to="alice;bob", content="hi", nudge=False)
+    assert result["delivered"] is True
+    assert set(result["recipients"]) == {"alice", "bob"}
+    assert "failed" not in result
+
+    for agent in ("alice", "bob"):
+        files = list((_db_mod.INBOX_DIR / agent).glob("*.json"))
+        assert len(files) == 1
+
+
+def test_send_message_semicolon_dedupes_recipients(set_sender):
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/alice", agent_id="alice", agent_type="reviewer")
+    bm.register_agent(pwd="/tmp/bob", agent_id="bob")
+
+    set_sender("sender")
+    result = bm.send_message(
+        to="alice;role:reviewer;alice", content="x", nudge=False
+    )
+    assert sorted(result["recipients"]) == ["alice"]
+
+
+def test_send_message_semicolon_handles_whitespace(set_sender):
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/alice", agent_id="alice")
+    bm.register_agent(pwd="/tmp/bob", agent_id="bob")
+
+    set_sender("sender")
+    result = bm.send_message(to=" alice ; bob ", content="x", nudge=False)
+    assert set(result["recipients"]) == {"alice", "bob"}
+
+
+def test_send_message_semicolon_partial_failure_reports_failed(set_sender):
+    import server.bus_server as bm
+
+    bm.register_agent(pwd="/tmp/alice", agent_id="alice")
+
+    set_sender("sender")
+    result = bm.send_message(to="alice;ghost", content="x", nudge=False)
+    assert result["delivered"] is True
+    assert result["recipients"] == ["alice"]
+    assert result["failed"] == [
+        {"to": "ghost", "error": "Recipient 'ghost' not found in registry"}
+    ]
+
+
+def test_send_message_semicolon_all_failed_returns_error(set_sender):
+    import server.bus_server as bm
+
+    set_sender("sender")
+    result = bm.send_message(to="ghost1;ghost2", content="x", nudge=False)
+    assert result["delivered"] is False
+    assert "ghost1" in result["error"]
+    assert "ghost2" in result["error"]
+
+
 # ── Runtime-specific message suffix ──────────────────────────────────────────
 
 

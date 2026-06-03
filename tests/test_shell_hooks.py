@@ -178,6 +178,179 @@ def test_bus_register_evicts_stale_tmux_target(isolated_bus):
     assert rows[0][0] != "stale:agent:fake-session:0.0"
 
 
+# ── runtime inference + codex pane-title handling ────────────────────────────
+
+
+def _install_tmux_identity_stub(stub_dir: Path) -> None:
+    """Fake `tmux` serving a configurable pane_title and target.
+
+    display-message returns $_HELIOY_TEST_PANE_TITLE for the pane_title
+    format and $_HELIOY_TEST_TMUX_TARGET for the session:window.pane
+    format. Every other subcommand (set-hook, etc.) no-ops so the hook's
+    tmux-hook installation does not fail the test.
+    """
+    stub_dir.mkdir(exist_ok=True)
+    stub = stub_dir / "tmux"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "display-message" ]; then\n'
+        '    for a in "$@"; do fmt="$a"; done\n'
+        "    case \"$fmt\" in\n"
+        '        *pane_title*) printf %s "$_HELIOY_TEST_PANE_TITLE" ;;\n'
+        '        *) printf %s "$_HELIOY_TEST_TMUX_TARGET" ;;\n'
+        "    esac\n"
+        "    exit 0\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+
+
+def _register_row(bus_dir: Path) -> tuple:
+    conn = sqlite3.connect(bus_dir / "registry.db")
+    try:
+        return conn.execute(
+            "SELECT agent_id, agent_type, runtime, tmux_target FROM agents"
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def test_bus_register_infers_codex_runtime_from_payload(isolated_bus):
+    """A codex SessionStart payload (transcript under ~/.codex) registers as codex.
+
+    The bare-codex path never sets HELIOY_RUNTIME, so the runtime must be
+    inferred from the hook payload, not defaulted to claude.
+    """
+    payload = (
+        '{"session_id":"sid",'
+        '"transcript_path":"/Users/x/.codex/sessions/2026/05/29/rollout-x.jsonl"}'
+    )
+    result = subprocess.run(
+        ["bash", str(REGISTER_HOOK)],
+        input=payload,
+        env=_hook_env(isolated_bus),  # strips HELIOY_RUNTIME and TMUX
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    agent_id, agent_type, runtime, _ = _register_row(isolated_bus)
+    assert runtime == "codex"
+    assert agent_id == SMOKE_AGENT_ID
+    assert agent_type == "general"
+
+
+def test_bus_register_codex_pane_title_is_not_used_as_agent_type(
+    isolated_bus, tmp_path
+):
+    """Codex names its pane after the cwd; that must not become the agent_type.
+
+    Reproduces the bare-codex bug: a pane titled with the repo basename was
+    decoded by the Claude `--agent` branch into agent_type=<repo>. Under the
+    codex runtime that branch must be skipped, yielding agent_type=general.
+    """
+    stub_dir = tmp_path / "stub-bin"
+    _install_tmux_identity_stub(stub_dir)
+    repo = Path(SMOKE_PROJECT_DIR).name
+    env = _hook_env(
+        isolated_bus,
+        TMUX="/tmp/fake-tmux,1,0",
+        TMUX_PANE="%0",
+        HELIOY_RUNTIME="codex",
+        _HELIOY_TEST_PANE_TITLE=repo,  # codex default title == cwd basename
+        _HELIOY_TEST_TMUX_TARGET="4:2.1",
+    )
+    env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(REGISTER_HOOK)],
+        input='{"session_id":"sid"}',
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    agent_id, agent_type, runtime, tmux_target = _register_row(isolated_bus)
+    assert agent_type == "general", f"codex pane title leaked into agent_type: {agent_type}"
+    assert agent_id == f"{repo}:general:4:2.1"
+    assert runtime == "codex"
+    assert tmux_target == "4:2.1"
+
+
+def test_bus_register_codex_recovers_role_from_env_when_title_clobbered(
+    isolated_bus, tmp_path
+):
+    """A warroom codex specialist keeps its role even after codex clobbers
+    the pane title to the cwd basename.
+
+    The pane's own SessionStart hook re-runs bus-register against the clobbered
+    title; HELIOY_BUS_AGENT_TYPE (injected by the launch command) drives the
+    fallback so the re-registration reconstructs the same canonical id rather
+    than collapsing to general and evicting the correct row.
+    """
+    stub_dir = tmp_path / "stub-bin"
+    _install_tmux_identity_stub(stub_dir)
+    repo = Path(SMOKE_PROJECT_DIR).name
+    env = _hook_env(
+        isolated_bus,
+        TMUX="/tmp/fake-tmux,1,0",
+        TMUX_PANE="%0",
+        HELIOY_RUNTIME="codex",
+        HELIOY_BUS_AGENT_TYPE="helioy-tools:backend-engineer",
+        _HELIOY_TEST_PANE_TITLE=repo,  # codex clobbered the canonical title
+        _HELIOY_TEST_TMUX_TARGET="1:3.2",
+    )
+    env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(REGISTER_HOOK)],
+        input='{"session_id":"sid"}',
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    agent_id, agent_type, runtime, tmux_target = _register_row(isolated_bus)
+    assert agent_type == "helioy-tools:backend-engineer"
+    assert agent_id == f"{repo}:helioy-tools:backend-engineer:1:3.2"
+    assert runtime == "codex"
+
+
+def test_bus_register_claude_pane_title_still_resolves_agent_type(
+    isolated_bus, tmp_path
+):
+    """Regression guard: the Claude `--agent` pane-title path keeps working."""
+    stub_dir = tmp_path / "stub-bin"
+    _install_tmux_identity_stub(stub_dir)
+    repo = Path(SMOKE_PROJECT_DIR).name
+    env = _hook_env(
+        isolated_bus,
+        TMUX="/tmp/fake-tmux,1,0",
+        TMUX_PANE="%0",
+        HELIOY_RUNTIME="claude",
+        _HELIOY_TEST_PANE_TITLE="backend-engineer",
+        _HELIOY_TEST_TMUX_TARGET="4:2.1",
+    )
+    env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(REGISTER_HOOK)],
+        input='{"session_id":"sid"}',
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    agent_id, agent_type, runtime, _ = _register_row(isolated_bus)
+    assert agent_type == "backend-engineer"
+    assert agent_id == f"{repo}:backend-engineer:4:2.1"
+    assert runtime == "claude"
+
+
 # ── codex-launch.sh: register + unregister lifecycle ─────────────────────────
 
 
@@ -231,14 +404,30 @@ def test_codex_launch_wrapper_registers_unregisters_and_runs_codex(
 
 
 def test_codex_launch_wrapper_uses_stable_shell_for_hooks(isolated_bus, tmp_path):
-    """Hook scripts must not resolve `bash` through the session PATH."""
+    """Hook scripts must not resolve `bash` through the session PATH.
+
+    The fake `bash` records only when it is invoked with a helioy hook script,
+    which is the property under test (codex-launch.sh must run the register /
+    unregister hooks via a stable absolute shell, never a PATH-resolved one).
+    Incidental PATH-bash use by unrelated tools is passed through to the real
+    bash so it cannot poison the signal: on a developer box `python3` is often a
+    pyenv/mise shim whose shebang is `#!/usr/bin/env bash`, so bus-register.sh's
+    `python3` call would otherwise trip this stub even though the wrapper is
+    correct.
+    """
     marker = tmp_path / "codex-ran.log"
     stub_dir = _install_codex_stub(tmp_path, marker)
 
     fake_bash_marker = tmp_path / "fake-bash-ran.log"
     fake_bash = stub_dir / "bash"
     fake_bash.write_text(
-        f"#!/bin/sh\nprintf fake-bash > {fake_bash_marker}\nexit 72\n"
+        "#!/bin/sh\n"
+        "for a in \"$@\"; do\n"
+        "    case \"$a\" in\n"
+        f"        *bus-register.sh|*bus-unregister.sh) printf fake-bash > {fake_bash_marker} ;;\n"
+        "    esac\n"
+        "done\n"
+        'exec /bin/bash "$@"\n'
     )
     fake_bash.chmod(0o755)
 

@@ -160,8 +160,12 @@ def send_message(
     registration (PID file, tmux pane title, or cwd basename fallback).
 
     Args:
-        to: Recipient agent_id. Use "*" to broadcast to all registered agents.
-            Use "role:<type>" to target all agents with that agent_type.
+        to: Use ";" to address multiple recipients in one call
+            (e.g. "alice;bob;role:reviewer"). Use a recipient agent_id,
+            "*" to broadcast to all registered agents, or "role:<type>" to
+            target all agents with that agent_type. Unresolved parts are
+            reported in a "failed" field on the response without blocking
+            delivery to the rest.
         content: Message body (plain text or markdown).
         reply_to: Address recipients should reply to. Defaults to sender.
                   Set to "*" to make replies go to all agents (group thread).
@@ -172,7 +176,9 @@ def send_message(
 
     Returns:
         {"message_id": str, "delivered": bool, "nudged": bool,
-         "recipients": [agent_id, ...]}
+         "recipients": [agent_id, ...],
+         "failed": [{"to": str, "error": str}, ...]  # only if any part failed
+        }
     """
     return message.send(
         sender_id=_self_agent_id(),
@@ -199,6 +205,8 @@ def nudge_message(to: str, content: str) -> dict:
     Args:
         to: Recipient agent_id. Use "*" to nudge all registered agents.
             Use "role:<type>" to nudge all agents with that agent_type.
+            Use ";" to address multiple recipients in one call
+            (e.g. "alice;bob"). Unresolved parts appear in "skipped".
         content: Text to type into each recipient pane and submit.
 
     Returns:

@@ -93,7 +93,19 @@ class CodexRuntimeAdapter:
         instructions = self.resolve_model_instructions_file(qualified_name)
         if instructions is None:
             raise RuntimeError(f"No Codex model instructions file for {qualified_name!r}")
-        return f"{cmd} --config model_instructions_file={shlex.quote(str(instructions))}"
+        # Pin the role in the pane environment. Codex overwrites its pane title
+        # to the cwd basename shortly after start, so the pane's own
+        # SessionStart hook (which re-runs bus-register against the clobbered
+        # title) can no longer read the canonical title the warroom set. The
+        # instructions file gives only the short name; HELIOY_BUS_AGENT_TYPE
+        # carries the qualified name so the re-registration reconstructs the
+        # same identity instead of collapsing to general and evicting the
+        # correct row. resolve-identity.sh consumes it in its fallback branch.
+        role_env = f"HELIOY_BUS_AGENT_TYPE={shlex.quote(qualified_name)}"
+        return (
+            f"{role_env} {cmd} "
+            f"--config model_instructions_file={shlex.quote(str(instructions))}"
+        )
 
     def agents_cache_dir(self) -> Path:
         return Path.home() / ".codex" / "skills"

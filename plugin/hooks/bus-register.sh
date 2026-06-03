@@ -17,11 +17,21 @@ INBOX_BASE="$BUS_DIR/inbox"
 HOOKS_LIB="$(dirname "$0")/lib/resolve-identity.sh"
 # shellcheck source=lib/resolve-identity.sh
 source "$HOOKS_LIB"
+
+# Read the hook payload once, up front. Both runtime inference and session_id
+# extraction need it, and the runtime must be known BEFORE identity resolution:
+# codex names its pane after the cwd, which the Claude `--agent` branch would
+# otherwise mistake for an agent type. resolve_runtime honors an explicit
+# HELIOY_RUNTIME (codex-launch.sh / warroom) before inferring from the payload.
+STDIN_JSON=$(cat)
+HELIOY_RUNTIME="$(resolve_runtime "$STDIN_JSON")"
+export HELIOY_RUNTIME
+
 resolve_agent_id
 
 AGENT_ID="$HELIOY_AGENT_ID"
 AGENT_TYPE="$HELIOY_AGENT_TYPE"
-RUNTIME="${HELIOY_RUNTIME:-claude}"
+RUNTIME="$HELIOY_RUNTIME"
 
 # Derive TMUX_TARGET for the registry record (used for nudges).
 TMUX_TARGET=""
@@ -38,7 +48,6 @@ else
 fi
 
 # Session ID: prefer stdin JSON (always available in hooks), fall back to env.
-STDIN_JSON=$(cat)
 SESSION_ID=$(echo "$STDIN_JSON" | jq -r '.session_id // empty' 2>/dev/null || true)
 SESSION_ID="${SESSION_ID:-${HELIOY_SESSION_ID:-${CLAUDE_SESSION_ID:-}}}"
 
