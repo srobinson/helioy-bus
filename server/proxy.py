@@ -29,6 +29,11 @@ from pathlib import Path
 WATCH_DIR = Path(__file__).parent
 PYTHON = sys.executable
 
+# Bound the wait for the inner server's initialize response during a restart.
+# While restarting, the proxy buffers all client traffic and forwards nothing,
+# so a slow or dead inner must never block this read indefinitely.
+INIT_REPLAY_TIMEOUT = 10.0
+
 
 def _log(msg: str) -> None:
     print(f"[helioy-bus proxy] {msg}", file=sys.stderr, flush=True)
@@ -89,33 +94,43 @@ class HotReloadProxy:
         assert proc.stdin is not None and proc.stdout is not None
         writer = proc.stdin
         reader = proc.stdout
-        # Send initialize to new inner server
-        writer.write(self.init_line)
-        await writer.drain()
-        # Discard inner server's initialize response; outer client already got one
-        await reader.readline()
-        # Complete the inner handshake
-        notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
-        writer.write(notif.encode())
-        await writer.drain()
+        try:
+            # Send initialize to new inner server
+            writer.write(self.init_line)
+            await writer.drain()
+            # Discard inner server's initialize response; outer client already
+            # got one. Bounded so a dead or slow inner cannot wedge the proxy.
+            await asyncio.wait_for(reader.readline(), timeout=INIT_REPLAY_TIMEOUT)
+            # Complete the inner handshake
+            notif = (
+                json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
+            )
+            writer.write(notif.encode())
+            await writer.drain()
+        except (TimeoutError, OSError) as exc:
+            _log(f"inner init replay failed ({exc!r}); resuming forwarding")
 
     async def _restart(self) -> None:
         self._restarting = True
         _log("file changed, restarting inner server")
-        if self.proc and self.proc.returncode is None:
-            self.proc.kill()
-            await self.proc.wait()
-        await self._spawn()
-        await self._replay_init()
-        assert self.proc is not None and self.proc.stdin is not None
-        stdin = self.proc.stdin
-        for msg in self.pending:
-            stdin.write(msg)
-        if self.pending:
-            await stdin.drain()
-        self.pending.clear()
-        self._restarting = False
-        _log("inner server ready")
+        try:
+            if self.proc and self.proc.returncode is None:
+                self.proc.kill()
+                await self.proc.wait()
+            await self._spawn()
+            await self._replay_init()
+            assert self.proc is not None and self.proc.stdin is not None
+            stdin = self.proc.stdin
+            for msg in self.pending:
+                stdin.write(msg)
+            if self.pending:
+                await stdin.drain()
+            self.pending.clear()
+            _log("inner server ready")
+        finally:
+            # Always clear the flag: a restart that bails out mid-way must not
+            # leave the proxy buffering client traffic forever.
+            self._restarting = False
 
     # ── Forward loops ──────────────────────────────────────────────────────────
 
@@ -162,8 +177,12 @@ class HotReloadProxy:
         from watchfiles import awatch
 
         async for changes in awatch(str(WATCH_DIR)):
-            if any(p.endswith(".py") for _, p in changes):
+            if not any(p.endswith(".py") and "__pycache__" not in p for _, p in changes):
+                continue
+            try:
                 await self._restart()
+            except Exception as exc:  # noqa: BLE001 - one bad restart must not kill the proxy
+                _log(f"restart failed ({exc!r}); proxy still serving inner server")
 
     # ── Entry point ────────────────────────────────────────────────────────────
 
