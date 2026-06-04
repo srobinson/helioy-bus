@@ -138,13 +138,17 @@ def _resolve_recipients(
     """
     parts = [p.strip() for p in to.split(";") if p.strip()]
     if not parts:
-        return [], [], {
-            "message_id": None,
-            "delivered": False,
-            "nudged": False,
-            "recipients": [],
-            "error": "Recipient address is empty",
-        }
+        return (
+            [],
+            [],
+            {
+                "message_id": None,
+                "delivered": False,
+                "nudged": False,
+                "recipients": [],
+                "error": "Recipient address is empty",
+            },
+        )
 
     recipients: list[dict] = []
     seen: set[str] = set()
@@ -168,13 +172,17 @@ def _resolve_recipients(
             error_msg = failed[0]["error"]
         else:
             error_msg = "; ".join(f"{f['to']}: {f['error']}" for f in failed)
-        return [], failed, {
-            "message_id": None,
-            "delivered": False,
-            "nudged": False,
-            "recipients": [],
-            "error": error_msg,
-        }
+        return (
+            [],
+            failed,
+            {
+                "message_id": None,
+                "delivered": False,
+                "nudged": False,
+                "recipients": [],
+                "error": error_msg,
+            },
+        )
 
     return recipients, failed, None
 
@@ -281,9 +289,7 @@ def nudge_direct(*, sender_id: str, to: str, content: str) -> dict:
         }
 
     nudged_targets: list[str] = []
-    skipped: list[dict] = [
-        {"agent_id": f["to"], "reason": f["error"]} for f in failed
-    ]
+    skipped: list[dict] = [{"agent_id": f["to"], "reason": f["error"]} for f in failed]
 
     for recipient in recipients:
         target_id = recipient["agent_id"]

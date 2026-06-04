@@ -102,10 +102,7 @@ class CodexRuntimeAdapter:
         # same identity instead of collapsing to general and evicting the
         # correct row. resolve-identity.sh consumes it in its fallback branch.
         role_env = f"HELIOY_BUS_AGENT_TYPE={shlex.quote(qualified_name)}"
-        return (
-            f"{role_env} {cmd} "
-            f"--config model_instructions_file={shlex.quote(str(instructions))}"
-        )
+        return f"{role_env} {cmd} --config model_instructions_file={shlex.quote(str(instructions))}"
 
     def agents_cache_dir(self) -> Path:
         return Path.home() / ".codex" / "skills"

@@ -109,9 +109,7 @@ class HotReloadProxy:
             # got one. Bounded so a dead or slow inner cannot wedge the proxy.
             await asyncio.wait_for(reader.readline(), timeout=INIT_REPLAY_TIMEOUT)
             # Complete the inner handshake
-            notif = (
-                json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
-            )
+            notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
             writer.write(notif.encode())
             await writer.drain()
         except (TimeoutError, OSError) as exc:
