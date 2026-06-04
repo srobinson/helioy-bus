@@ -14,8 +14,8 @@ fmt:
     uv run ruff format {{ server_dir }}/
     uv run ruff check {{ server_dir }}/ --fix
 
-# Verify: format, lint, types, shellcheck, tests (no mutations)
-check:
+# Strict verification, no mutations (used by CI and preflight)
+verify:
     uv run ruff format {{ server_dir }}/ --check
     uv run ruff check {{ server_dir }}/
     uv run mypy {{ server_dir }}/ --explicit-package-bases --ignore-missing-imports
@@ -26,6 +26,9 @@ check:
     fi
     uv run pytest tests/ -v
 
+# Auto-fix what is fixable (fmt), then run the strict verification
+check: fmt verify
+
 # Run tests only
 test:
     uv run pytest tests/ -v
@@ -34,5 +37,5 @@ test:
 run:
     uv run python {{ server_dir }}/bus_server.py
 
-# Preflight: build + check
-preflight: build check
+# Preflight: build + strict verify
+preflight: build verify
