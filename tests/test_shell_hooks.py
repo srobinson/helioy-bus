@@ -92,6 +92,46 @@ def test_bus_register_writes_pid_file_and_db_row(isolated_bus):
     ]
 
 
+def test_bus_register_prefers_pinned_cwd_over_hijacked_pwd(isolated_bus, tmp_path):
+    """Codex re-registers via its own ~/.codex/hooks.json SessionStart hook,
+    but with `memories = true` it runs that hook chdir'd into ~/.codex/memories.
+    With cwd taken from the live working directory the registration records
+    ~/.codex/memories and the agent_id repo prefix collapses to `memories:`, so
+    mail to `repo:agent` is lost. codex-launch.sh pins HELIOY_BUS_CWD to the real
+    repo; bus-register.sh must prefer it over the hijacked working directory.
+    """
+    repo = "/tmp/helioy-codex-repo"
+    # Run the hook with its actual cwd inside a .codex/memories tree, exactly as
+    # codex's memories feature does (bash recomputes $PWD from the real cwd).
+    hijacked = tmp_path / ".codex" / "memories"
+    hijacked.mkdir(parents=True)
+    env = _hook_env(
+        isolated_bus,
+        CLAUDE_PROJECT_DIR="",  # codex does not set the Claude-only var
+        HELIOY_BUS_CWD=repo,  # pinned at pane start by codex-launch.sh
+        HELIOY_RUNTIME="codex",
+    )
+    env["PWD"] = str(hijacked)
+    result = subprocess.run(
+        ["bash", str(REGISTER_HOOK)],
+        input='{"session_id":"test-sid"}',
+        env=env,
+        cwd=str(hijacked),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    conn = sqlite3.connect(isolated_bus / "registry.db")
+    try:
+        agent_id, cwd = conn.execute("SELECT agent_id, cwd FROM agents").fetchone()
+    finally:
+        conn.close()
+    assert cwd == repo, f"registered cwd should be the pinned repo, got {cwd}"
+    assert "helioy-codex-repo" in agent_id and "memories" not in agent_id, agent_id
+
+
 def test_bus_unregister_removes_row_and_pid_file(isolated_bus):
     assert _run_register(isolated_bus).returncode == 0
 
