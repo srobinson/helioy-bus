@@ -21,6 +21,11 @@ HOOK_SHELL="${HELIOY_BUS_HOOK_SHELL:-/bin/bash}"
 # $PPID when it runs as our direct child subprocess.
 export HELIOY_BUS_CODEX_PID=$$
 export HELIOY_RUNTIME=codex
+# Pin the launch cwd (the warroom/repo dir). Codex's `memories` feature later
+# re-runs bus-register from ~/.codex/memories; without this pin the agent would
+# re-register with cwd=~/.codex/memories and its agent_id prefix would collapse
+# from the repo name to `memories`. bus-register.sh prefers HELIOY_BUS_CWD.
+export HELIOY_BUS_CWD="$PWD"
 
 # Reuse the runtime-neutral register hook. It reads stdin JSON for
 # session_id; codex has no session id at wrapper-start time, so pass {}.

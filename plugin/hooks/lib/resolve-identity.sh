@@ -22,13 +22,24 @@
 # agent_type may contain colons for namespaced types (e.g. voltagent-lang:rust-engineer).
 _IDENTITY_PATTERN='^[a-zA-Z0-9_-]+:[a-zA-Z0-9_:-]+:[a-zA-Z0-9_-]+:[0-9]+\.[0-9]+$'
 
-# Repo name = basename of the project dir (CLAUDE_PROJECT_DIR preferred, PWD else).
-_identity_repo() {
+# Project directory for this session. CLAUDE_PROJECT_DIR (Claude) wins;
+# HELIOY_BUS_CWD is the launch cwd pinned by codex-launch.sh, preferred over the
+# live PWD because codex's `memories` feature re-runs hooks chdir'd into
+# ~/.codex/memories, which would otherwise register the agent under `memories`.
+# PWD is the last resort.
+_identity_project_dir() {
     if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-        basename "$CLAUDE_PROJECT_DIR"
+        printf '%s' "$CLAUDE_PROJECT_DIR"
+    elif [[ -n "${HELIOY_BUS_CWD:-}" ]]; then
+        printf '%s' "$HELIOY_BUS_CWD"
     else
-        basename "${PWD:-unknown}"
+        printf '%s' "${PWD:-unknown}"
     fi
+}
+
+# Repo name = basename of the project dir.
+_identity_repo() {
+    basename "$(_identity_project_dir)"
 }
 
 # Determine the runtime ("claude" | "codex") for this hook invocation.

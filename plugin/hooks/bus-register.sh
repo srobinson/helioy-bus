@@ -40,12 +40,9 @@ if [[ -n "${TMUX_PANE:-}" && -n "${TMUX:-}" ]]; then
         '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || echo "")}"
 fi
 
-# Working directory for this session
-if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-    PWD_EFFECTIVE="$CLAUDE_PROJECT_DIR"
-else
-    PWD_EFFECTIVE="${PWD:-}"
-fi
+# Working directory for this session. Shared resolver (resolve-identity.sh):
+# CLAUDE_PROJECT_DIR, then the codex launch-cwd pin HELIOY_BUS_CWD, then PWD.
+PWD_EFFECTIVE="$(_identity_project_dir)"
 
 # Session ID: prefer stdin JSON (always available in hooks), fall back to env.
 SESSION_ID=$(echo "$STDIN_JSON" | jq -r '.session_id // empty' 2>/dev/null || true)
