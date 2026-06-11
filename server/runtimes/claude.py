@@ -32,7 +32,7 @@ class ClaudeRuntimeAdapter:
     # so the session really is bound to that role from launch onward.
     supports_specialist_roles = True
 
-    _BASE_CMD = "claude --dangerously-skip-permissions --model opus --effort xhigh"
+    _BASE_CMD = "claude --dangerously-skip-permissions --model claude-fable-5 --effort xhigh"
 
     def build_launch_command(self, *, qualified_name: str | None) -> str:
         if qualified_name is None:
