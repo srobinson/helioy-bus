@@ -23,7 +23,19 @@ source "$HOOKS_LIB"
 # codex names its pane after the cwd, which the Claude `--agent` branch would
 # otherwise mistake for an agent type. resolve_runtime honors an explicit
 # HELIOY_RUNTIME (codex-launch.sh / warroom) before inferring from the payload.
-STDIN_JSON=$(cat)
+# Claude's hook runner can leave stdin open on some startup paths. A plain
+# `cat` would then block SessionStart forever, so read only immediately
+# available payload bytes and fall back to an empty object.
+STDIN_JSON=""
+_stdin_ch=""
+if IFS= read -r -n 1 -t 1 _stdin_ch; then
+    STDIN_JSON="$_stdin_ch"
+    while IFS= read -r -n 1 -t 1 _stdin_ch; do
+        STDIN_JSON+="$_stdin_ch"
+    done
+fi
+unset _stdin_ch
+STDIN_JSON="${STDIN_JSON:-{}}"
 HELIOY_RUNTIME="$(resolve_runtime "$STDIN_JSON")"
 export HELIOY_RUNTIME
 
@@ -82,74 +94,65 @@ unset _BASH_SOURCE_ROOT
 LOG_DIR="$BUS_DIR/logs"
 mkdir -p "$LOG_DIR"
 PY_STDERR=$(mktemp)
+PY_TIMEOUT_SECONDS="${HELIOY_BUS_REGISTER_TIMEOUT_SECONDS:-3}"
+if ! [[ "$PY_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || [[ "$PY_TIMEOUT_SECONDS" -lt 1 ]]; then
+    PY_TIMEOUT_SECONDS=3
+fi
+
+PYTHON_BIN="${HELIOY_BUS_PYTHON:-}"
+if [[ -z "$PYTHON_BIN" && -x "$HELIOY_BUS_ROOT/.venv/bin/python" ]]; then
+    PYTHON_BIN="$HELIOY_BUS_ROOT/.venv/bin/python"
+elif [[ -z "$PYTHON_BIN" && -x /usr/bin/python3 ]]; then
+    PYTHON_BIN="/usr/bin/python3"
+elif [[ -z "$PYTHON_BIN" ]]; then
+    PYTHON_BIN="$(command -v python3 || true)"
+fi
+
+REGISTER_SCRIPT="$HELIOY_BUS_ROOT/plugin/hooks/lib/register_agent.py"
+
+_run_registration() {
+    _HELIOY_BUS_DIR="$BUS_DIR" \
+    _HELIOY_INBOX_BASE="$INBOX_BASE" \
+    _HELIOY_AGENT_ID="$AGENT_ID" \
+    _HELIOY_PWD="$PWD_EFFECTIVE" \
+    _HELIOY_TMUX="$TMUX_TARGET" \
+    _HELIOY_SESSION_ID="$SESSION_ID" \
+    _HELIOY_AGENT_TYPE="$AGENT_TYPE" \
+    _HELIOY_RUNTIME="$RUNTIME" \
+    _HELIOY_PID="$PPID" \
+    HELIOY_BUS_ROOT="$HELIOY_BUS_ROOT" \
+    "$PYTHON_BIN" "$REGISTER_SCRIPT" 2>"$PY_STDERR"
+}
 
 set +e
-_HELIOY_BUS_DIR="$BUS_DIR" \
-_HELIOY_INBOX_BASE="$INBOX_BASE" \
-_HELIOY_AGENT_ID="$AGENT_ID" \
-_HELIOY_PWD="$PWD_EFFECTIVE" \
-_HELIOY_TMUX="$TMUX_TARGET" \
-_HELIOY_SESSION_ID="$SESSION_ID" \
-_HELIOY_AGENT_TYPE="$AGENT_TYPE" \
-_HELIOY_RUNTIME="$RUNTIME" \
-_HELIOY_PID="$PPID" \
-HELIOY_BUS_ROOT="$HELIOY_BUS_ROOT" \
-python3 - <<'PYEOF' 2>"$PY_STDERR"
-import os, sys
-from pathlib import Path
-
-# Make server._db importable from the repo root
-sys.path.insert(0, os.environ["HELIOY_BUS_ROOT"])
-
-from server._db import BUS_DIR as _default_bus_dir, INBOX_DIR as _default_inbox_dir
-from server._db import _now, db
-import server._db as _db_mod
-
-# Override paths with hook-supplied values (may differ from defaults)
-bus_dir = Path(os.environ["_HELIOY_BUS_DIR"])
-inbox_base = Path(os.environ["_HELIOY_INBOX_BASE"])
-_db_mod.BUS_DIR = bus_dir
-_db_mod.REGISTRY_DB = bus_dir / "registry.db"
-_db_mod.INBOX_DIR = inbox_base
-
-# Create inbox directory for this agent
-inbox = inbox_base / os.environ["_HELIOY_AGENT_ID"]
-inbox.mkdir(parents=True, exist_ok=True)
-
-# Bootstrap schema (idempotent) and register in one transaction.
-# Use parent PID (Claude Code process), not this subprocess PID.
-with db() as conn:
-    # Pane eviction: a tmux pane hosts at most one Claude process at a time,
-    # so any prior row claiming our tmux_target is stale by definition.
-    # This is an ownership assertion from the new occupant, not PID-based
-    # liveness guessing.
-    tmux_target = os.environ["_HELIOY_TMUX"]
-    agent_id = os.environ["_HELIOY_AGENT_ID"]
-    if tmux_target:
-        conn.execute(
-            "DELETE FROM agents WHERE tmux_target = ? AND agent_id != ?",
-            (tmux_target, agent_id),
-        )
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO agents
-            (agent_id, cwd, tmux_target, pid, session_id, agent_type, runtime,
-             registered_at, last_seen)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            agent_id,
-            os.environ["_HELIOY_PWD"],
-            tmux_target,
-            int(os.environ["_HELIOY_PID"]),
-            os.environ.get("_HELIOY_SESSION_ID", ""),
-            os.environ.get("_HELIOY_AGENT_TYPE", "general"),
-            os.environ.get("_HELIOY_RUNTIME", "claude"),
-            _now(), _now(),
-        ),
-    )
-PYEOF
-PY_EXIT=$?
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+    printf 'python3 unavailable for bus-register\n' > "$PY_STDERR"
+    PY_EXIT=127
+elif [[ ! -f "$REGISTER_SCRIPT" ]]; then
+    printf 'register helper missing: %s\n' "$REGISTER_SCRIPT" > "$PY_STDERR"
+    PY_EXIT=127
+else
+    _run_registration &
+    PY_PID=$!
+    PY_EXIT=0
+    _deadline=$((SECONDS + PY_TIMEOUT_SECONDS))
+    while kill -0 "$PY_PID" 2>/dev/null; do
+        if [[ "$SECONDS" -ge "$_deadline" ]]; then
+            kill "$PY_PID" 2>/dev/null || true
+            sleep 0.2
+            kill -9 "$PY_PID" 2>/dev/null || true
+            wait "$PY_PID" 2>/dev/null || true
+            printf 'registration timed out after %ss\n' "$PY_TIMEOUT_SECONDS" > "$PY_STDERR"
+            PY_EXIT=124
+            break
+        fi
+        sleep 0.1
+    done
+    if [[ $PY_EXIT -eq 0 ]]; then
+        wait "$PY_PID"
+        PY_EXIT=$?
+    fi
+fi
 
 if [[ $PY_EXIT -ne 0 ]]; then
     printf '[%s] bus-register FAIL agent_id=%s exit=%d\nstderr: %s\n' \
