@@ -49,6 +49,12 @@ class GrokRuntimeAdapter:
         self.model = model
 
     def build_launch_command(self, *, qualified_name: str | None) -> str:
+        # Known upstream issue (grok 0.2.81, validated live 2026-07-02): the
+        # TUI ignores -m at launch; ~/.grok/config.toml [models].default wins
+        # (headless -p honors -m). The flag stays here as the declared intent
+        # and for when upstream fixes precedence; until then orchestrators
+        # must pin via /model <id> post-spawn and verify the pane footer
+        # (see the warroom skill's Runtimes section).
         wrapper = shlex.quote(str(_LAUNCH_WRAPPER))
         cmd = (
             f"{wrapper} {self.runtime_id} {self.self_pid_env} grok --always-approve -m {self.model}"
