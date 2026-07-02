@@ -78,6 +78,34 @@ class TmuxGateway:
         """Return True if the tmux target pane exists and is reachable."""
         return self._run_silent("list-panes", "-t", target, timeout=3)
 
+    def pane_snapshot(self) -> dict[str, str] | None:
+        """Return {pane_id: "session:window.pane"} for every pane on the server.
+
+        One tmux call captures the current address of every pane, so
+        reconciliation can refresh drifted tmux_target values (window
+        kills re-index surviving windows; the stable %N pane id is the
+        identity, the address is derived). Returns None when tmux is
+        unreachable so callers skip the sync rather than acting on an
+        empty picture.
+        """
+        try:
+            out = self._run(
+                "list-panes",
+                "-a",
+                "-F",
+                "#{pane_id} #{session_name}:#{window_index}.#{pane_index}",
+                timeout=3,
+            )
+        except RuntimeError as err:
+            _db._dbg(f"pane_snapshot: unavailable: {err}")
+            return None
+        snapshot: dict[str, str] = {}
+        for line in out.splitlines():
+            pane_id, _, target = line.strip().partition(" ")
+            if pane_id and target:
+                snapshot[pane_id] = target
+        return snapshot
+
     def kill_pane(self, pane_id: str) -> bool:
         """Kill a tmux pane. Best-effort; returns True on success."""
         return self._run_silent("kill-pane", "-t", pane_id)

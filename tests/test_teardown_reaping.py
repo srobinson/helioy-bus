@@ -240,3 +240,92 @@ def test_status_reports_dead_member_despite_reused_tmux_target(monkeypatch):
     assert member["pane_alive"] is False
     assert member["registered"] is False
     assert member["agent_instance_id"] is None
+
+
+# ── sync_pane_addresses: tmux_target follows the pane, not the other way ─────
+
+
+def _register_synced_agent(agent_id: str, tmux_target: str, pane_id: str) -> None:
+    agent_registry.register(
+        pwd=f"/tmp/{agent_id.split(':', 1)[0]}",
+        tmux_target=tmux_target,
+        agent_id=agent_id,
+        session_id="",
+        agent_type="general",
+        pane_id=pane_id,
+        profile=None,
+    )
+
+
+def test_sync_refreshes_drifted_agent_and_member_targets(monkeypatch):
+    """After a window kill re-indexes survivors, the snapshot maps each
+    stable pane_id to its NEW address; sync rewrites the stale rows."""
+    _register_synced_agent("repo-a:general:6:3.1", "6:3.1", "%70")
+    _register_synced_agent("repo-b:general:6:4.1", "6:4.1", "%80")
+    now = _db._now()
+    with _db.db() as conn:
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("wr-sync", "6", "wr-sync", "/tmp/repo-a", now),
+        )
+        conn.execute(
+            "INSERT INTO warroom_members "
+            "(warroom_member_id, warroom_id, desired_runtime, desired_role, state, "
+            " agent_instance_id, spawn_order, tmux_target, pane_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("ms1", "wr-sync", "grok", "general", "active", "repo-a:general:6:3.1", 0, "6:3.1", "%70", now, now),
+        )
+    # Window 2 was killed: %70 moved from 6:3.1 to 6:2.1; %80 unchanged.
+    monkeypatch.setattr(
+        gateway, "pane_snapshot", lambda: {"%70": "6:2.1", "%80": "6:4.1"}
+    )
+
+    updated = reconciliation.sync_pane_addresses()
+
+    assert updated == 2  # the agent row and the member row for %70
+    with _db.db() as conn:
+        agent = conn.execute(
+            "SELECT tmux_target FROM agents WHERE agent_id = 'repo-a:general:6:3.1'"
+        ).fetchone()
+        assert agent["tmux_target"] == "6:2.1"
+        untouched = conn.execute(
+            "SELECT tmux_target FROM agents WHERE agent_id = 'repo-b:general:6:4.1'"
+        ).fetchone()
+        assert untouched["tmux_target"] == "6:4.1"
+        member = conn.execute(
+            "SELECT tmux_target FROM warroom_members WHERE warroom_member_id = 'ms1'"
+        ).fetchone()
+        assert member["tmux_target"] == "6:2.1"
+
+
+def test_sync_leaves_dead_and_legacy_rows_to_prune(monkeypatch):
+    """A pane_id absent from the snapshot means the pane is gone: sync
+    must not touch the row (eviction is prune's job), and rows without
+    pane_id are never rewritten."""
+    _register_synced_agent("repo-dead:general:6:5.1", "6:5.1", "%90")
+    agent_registry.register(
+        pwd="/tmp/repo-legacy",
+        tmux_target="6:6.1",
+        agent_id="repo-legacy:general:6:6.1",
+        session_id="",
+        agent_type="general",
+        profile=None,
+    )
+    monkeypatch.setattr(gateway, "pane_snapshot", lambda: {"%999": "6:6.1"})
+
+    assert reconciliation.sync_pane_addresses() == 0
+    with _db.db() as conn:
+        rows = {
+            r["agent_id"]: r["tmux_target"]
+            for r in conn.execute("SELECT agent_id, tmux_target FROM agents")
+        }
+    assert rows["repo-dead:general:6:5.1"] == "6:5.1"
+    assert rows["repo-legacy:general:6:6.1"] == "6:6.1"
+
+
+def test_sync_skips_when_tmux_unreachable(monkeypatch):
+    _register_synced_agent("repo-x:general:6:7.1", "6:7.1", "%95")
+    monkeypatch.setattr(gateway, "pane_snapshot", lambda: None)
+
+    assert reconciliation.sync_pane_addresses() == 0
