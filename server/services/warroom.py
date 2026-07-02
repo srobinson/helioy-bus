@@ -82,6 +82,22 @@ def kill_warrooms(conn: sqlite3.Connection, name: str, kill_all: bool) -> list[s
     for row in rows:
         wid = row["warroom_id"]
         gateway.kill_window(row["tmux_session"], row["tmux_window"])
+        # Reap the members' bus registrations. tmux kill-window HUPs the
+        # panes, but a wrapper that dies before its unregister trap runs
+        # (or a runtime killed outright) would leak its agents row, and
+        # the lazy prune backstop cannot be trusted to catch it: window
+        # re-indexing can hand the dead row's tmux_target to an unrelated
+        # live pane. Keyed on the member's stable pane_id and reconciled
+        # agent_instance_id, never on the reusable tmux_target.
+        members = conn.execute(
+            "SELECT agent_instance_id, pane_id FROM warroom_members WHERE warroom_id = ?",
+            (wid,),
+        ).fetchall()
+        for member in members:
+            conn.execute(
+                "DELETE FROM agents WHERE (pane_id != '' AND pane_id = ?) OR agent_id = ?",
+                (member["pane_id"], member["agent_instance_id"] or ""),
+            )
         conn.execute("DELETE FROM warroom_members WHERE warroom_id = ?", (wid,))
         conn.execute("DELETE FROM warrooms WHERE warroom_id = ?", (wid,))
         killed.append(wid)
@@ -636,13 +652,18 @@ def status(*, name: str = "") -> list[dict]:
         result = []
         for wr in warrooms:
             wid = wr["warroom_id"]
+            # Join and liveness key on the stable pane_id when available;
+            # tmux_target is reusable after window re-indexing, so a dead
+            # member's freed target can point at an unrelated live pane
+            # (same hazard as in reconciliation and prune_dead_agents).
             members_rows = conn.execute(
                 """
                 SELECT wm.*,
                        a.agent_id   AS registered_agent_id,
                        a.token_usage AS agent_token_usage
                 FROM warroom_members wm
-                LEFT JOIN agents a ON a.tmux_target = wm.tmux_target
+                LEFT JOIN agents a ON (a.pane_id != '' AND a.pane_id = wm.pane_id)
+                    OR (a.pane_id = '' AND a.tmux_target = wm.tmux_target)
                 WHERE wm.warroom_id = ?
                 ORDER BY wm.spawn_order
                 """,
@@ -652,7 +673,7 @@ def status(*, name: str = "") -> list[dict]:
             members = []
             for m in members_rows:
                 tmux_target = m["tmux_target"]
-                pane_alive = gateway.pane_alive(tmux_target)
+                pane_alive = gateway.pane_alive(m["pane_id"] or tmux_target)
 
                 registered = pane_alive and m["registered_agent_id"] is not None
                 agent_instance_id = m["registered_agent_id"] if registered else None

@@ -321,14 +321,20 @@ def test_codex_adapter_message_suffix_grants_authorization():
 
 
 def test_codex_build_launch_command_points_at_launch_wrapper():
-    """Codex launch goes through codex-launch.sh so the pane auto-registers."""
+    """Codex launch goes through runtime-launch.sh so the pane auto-registers."""
     cmd = CODEX.build_launch_command(qualified_name=None)
-    wrapper = Path(cmd)
-    assert wrapper.name == "codex-launch.sh"
+    parts = cmd.split()
+    wrapper = Path(parts[0])
+    assert wrapper.name == "runtime-launch.sh"
     assert wrapper.exists(), f"wrapper missing: {wrapper}"
-    # Wrapper forces non-interactive Codex panes through the approved launch mode.
-    content = wrapper.read_text()
-    assert 'codex --dangerously-bypass-approvals-and-sandbox "$@"' in content
+    # The adapter owns the full codex invocation, including the approved
+    # launch mode; the wrapper only wraps lifecycle around it.
+    assert parts[1:5] == [
+        "codex",
+        "HELIOY_BUS_CODEX_PID",
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox",
+    ]
 
 
 def test_codex_build_launch_command_adds_model_instructions_file(fake_codex_instructions):
@@ -415,7 +421,7 @@ def test_spawn_pane_uses_for_id_when_runtime_specified(monkeypatch):
     send_keys_calls = [c for c in call_log if c[0] == "send-keys"]
     assert send_keys_calls, "spawn_pane did not issue send-keys"
     # Codex adapter now launches through the bus-registering wrapper.
-    assert any("codex-launch.sh" in arg for arg in send_keys_calls[0])
+    assert any("runtime-launch.sh" in arg for arg in send_keys_calls[0])
     assert result["runtime"] == "codex"
 
 
@@ -451,7 +457,7 @@ def test_spawn_pane_codex_specialist_includes_model_instructions_file(
     send_keys_calls = [c for c in call_log if c[0] == "send-keys"]
     assert send_keys_calls, "spawn_pane did not issue send-keys"
     cmd = send_keys_calls[0][3]
-    assert "codex-launch.sh" in cmd
+    assert "runtime-launch.sh" in cmd
     assert "--config" in cmd
     assert "model_instructions_file=" in cmd
     assert str(fake_codex_instructions / "agent-browser.md") in cmd
@@ -760,7 +766,7 @@ def test_proxy_build_inner_env_seeds_default_when_no_runtime_env_set():
 
 
 def test_proxy_build_inner_env_preserves_upstream_codex_pid():
-    """When codex-launch.sh has set HELIOY_BUS_CODEX_PID, proxy preserves it
+    """When runtime-launch.sh has set HELIOY_BUS_CODEX_PID, proxy preserves it
     and does not overwrite HELIOY_BUS_CLAUDE_PID with the spurious
     parent PID of a Codex-hosted MCP subprocess.
     """

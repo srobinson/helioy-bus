@@ -49,7 +49,7 @@ def build_inner_env(environ: Mapping[str, str], parent_pid: int) -> dict[str, st
     """Build the env for the inner server, setting the active runtime's
     self_pid_env only when no upstream wrapper has done so.
 
-    When a wrapper (e.g. ``codex-launch.sh``) has already exported its
+    When a wrapper (e.g. ``runtime-launch.sh``) has already exported its
     runtime's PID env, preserve it. When nothing upstream has, fall back
     to the default adapter and seed its env var with the parent PID,
     the historical Claude-only path.

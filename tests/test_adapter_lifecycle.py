@@ -74,9 +74,9 @@ def test_codex_lifecycle_integration_declares_wrapper_kind():
 
 
 def test_codex_startup_script_is_launch_wrapper():
-    """Codex bootstraps registration from codex-launch.sh, not a hook."""
+    """Codex bootstraps registration from runtime-launch.sh, not a hook."""
     startup = CODEX.lifecycle_integration().startup_script
-    assert startup.name == "codex-launch.sh"
+    assert startup.name == "runtime-launch.sh"
     assert startup.exists(), f"launch wrapper missing: {startup}"
 
 

@@ -23,8 +23,8 @@
 _IDENTITY_PATTERN='^[a-zA-Z0-9_-]+:[a-zA-Z0-9_:-]+:[a-zA-Z0-9_-]+:[0-9]+\.[0-9]+$'
 
 # Project directory for this session. CLAUDE_PROJECT_DIR (Claude) wins;
-# HELIOY_BUS_CWD is the launch cwd pinned by codex-launch.sh, preferred over the
-# live PWD because codex's `memories` feature re-runs hooks chdir'd into
+# HELIOY_BUS_CWD is the launch cwd pinned by runtime-launch.sh, preferred over
+# the live PWD because codex's `memories` feature re-runs hooks chdir'd into
 # ~/.codex/memories, which would otherwise register the agent under `memories`.
 # PWD is the last resort.
 _identity_project_dir() {
@@ -42,13 +42,16 @@ _identity_repo() {
     basename "$(_identity_project_dir)"
 }
 
-# Determine the runtime ("claude" | "codex") for this hook invocation.
-# Precedence:
-#   1. explicit HELIOY_RUNTIME (set by codex-launch.sh / warroom spawn) wins;
+# Determine the runtime ("claude" | "codex" | "grok" | ...) for this hook
+# invocation. Precedence:
+#   1. explicit HELIOY_RUNTIME (set by runtime-launch.sh / warroom spawn) wins;
 #   2. otherwise infer from the SessionStart payload's transcript_path, which
-#      lives under the runtime's home dir (~/.codex vs ~/.claude) and, for
-#      codex, carries a "rollout-" session filename;
+#      lives under the runtime's home dir (~/.codex vs ~/.grok vs ~/.claude)
+#      and, for codex, carries a "rollout-" session filename;
 #   3. default to "claude".
+# Grok panes normally arrive via step 1 (grok does not execute hooks, so
+# registration always comes from the wrapper, which pins HELIOY_RUNTIME to
+# the exact grok runtime id); the path inference is a fallback only.
 # Arg 1: the raw hook stdin JSON (may be empty). Echoes the resolved runtime.
 resolve_runtime() {
     if [[ -n "${HELIOY_RUNTIME:-}" ]]; then
@@ -57,6 +60,7 @@ resolve_runtime() {
     fi
     case "${1:-}" in
         */.codex/*|*rollout-*) printf 'codex' ;;
+        */.grok/*)             printf 'grok' ;;
         */.claude/*)           printf 'claude' ;;
         *)                     printf 'claude' ;;
     esac

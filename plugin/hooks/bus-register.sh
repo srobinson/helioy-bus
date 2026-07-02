@@ -22,7 +22,7 @@ source "$HOOKS_LIB"
 # extraction need it, and the runtime must be known BEFORE identity resolution:
 # codex names its pane after the cwd, which the Claude `--agent` branch would
 # otherwise mistake for an agent type. resolve_runtime honors an explicit
-# HELIOY_RUNTIME (codex-launch.sh / warroom) before inferring from the payload.
+# HELIOY_RUNTIME (runtime-launch.sh / warroom) before inferring from the payload.
 # Claude's hook runner can leave stdin open on some startup paths. A plain
 # `cat` would then block SessionStart forever, so read only immediately
 # available payload bytes and fall back to an empty object.
@@ -116,6 +116,7 @@ _run_registration() {
     _HELIOY_AGENT_ID="$AGENT_ID" \
     _HELIOY_PWD="$PWD_EFFECTIVE" \
     _HELIOY_TMUX="$TMUX_TARGET" \
+    _HELIOY_PANE_ID="${TMUX_PANE:-}" \
     _HELIOY_SESSION_ID="$SESSION_ID" \
     _HELIOY_AGENT_TYPE="$AGENT_TYPE" \
     _HELIOY_RUNTIME="$RUNTIME" \

@@ -44,6 +44,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
             agent_id      TEXT PRIMARY KEY,
             cwd           TEXT NOT NULL,
             tmux_target   TEXT NOT NULL DEFAULT '',
+            pane_id       TEXT NOT NULL DEFAULT '',
             pid           INTEGER,
             session_id    TEXT NOT NULL DEFAULT '',
             agent_type    TEXT NOT NULL DEFAULT 'general',
@@ -99,6 +100,12 @@ def _init_db(conn: sqlite3.Connection) -> None:
     # Migration: add token_usage column for token tracking
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE agents ADD COLUMN token_usage TEXT NOT NULL DEFAULT '{}'")
+    # Migration: add pane_id, the stable tmux pane id (%N) recorded at
+    # registration. tmux_target (session:window.pane) is mutable under
+    # window re-indexing, so liveness checks and warroom reaping key on
+    # pane_id when present; '' means pre-migration or non-tmux rows.
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE agents ADD COLUMN pane_id TEXT NOT NULL DEFAULT ''")
     # Migration: add warroom layout/runtime_policy/metadata for existing warrooms
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE warrooms ADD COLUMN layout TEXT NOT NULL DEFAULT 'tiled'")
