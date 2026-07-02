@@ -116,6 +116,7 @@ def list_agents(tmux_filter: str = "", cwd_basename: str = "") -> list[dict]:
     pid, registered_at, last_seen. Agents whose tmux pane no longer
     exists are removed from the registry before returning.
     """
+    reconciliation.sync_pane_addresses()
     reconciliation.prune_dead_agents()
     return agent_registry.list_active(tmux_filter=tmux_filter, cwd_basename=cwd_basename)
 

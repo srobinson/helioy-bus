@@ -15,6 +15,45 @@ from server import _db
 from server._tmux import gateway
 
 
+def sync_pane_addresses() -> int:
+    """Refresh drifted tmux_target values from the live pane snapshot.
+
+    Warroom kills re-index the surviving windows, so the
+    session:window.pane address of a still-alive agent changes while
+    the registry keeps the address recorded at registration. The stable
+    pane_id (%N) is the identity; this pass re-derives the current
+    address for every agents and warroom_members row that carries one,
+    in a single tmux call. Rows without pane_id (pre-migration or
+    non-tmux) are left alone, and nothing is evicted here — dead panes
+    remain `prune_dead_agents`' job. Returns the count of rows updated.
+    """
+    snapshot = gateway.pane_snapshot()
+    if snapshot is None:
+        return 0
+    updated = 0
+    now = _db._now()
+    with _db.db() as conn:
+        for table, key, extra in (
+            ("agents", "agent_id", ""),
+            ("warroom_members", "warroom_member_id", ", updated_at = ?"),
+        ):
+            rows = conn.execute(
+                f"SELECT {key} AS key, tmux_target, pane_id FROM {table} WHERE pane_id != ''"
+            ).fetchall()
+            for r in rows:
+                current = snapshot.get(r["pane_id"])
+                if current is None or current == r["tmux_target"]:
+                    continue
+                params = (current, now, r["key"]) if extra else (current, r["key"])
+                conn.execute(
+                    f"UPDATE {table} SET tmux_target = ?{extra} WHERE {key} = ?",
+                    params,
+                )
+                _db._dbg(f"sync_pane_addresses: {r['key']!r} {r['tmux_target']} -> {current}")
+                updated += 1
+    return updated
+
+
 def prune_dead_agents() -> set[str]:
     """Evict registry rows whose tmux pane is gone, or whose PID is dead.
 

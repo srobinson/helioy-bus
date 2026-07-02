@@ -284,3 +284,25 @@ def test_nudge_returns_false_when_submit_fails():
     ]
     with patch("server._tmux.subprocess.run", side_effect=_scripted_run(responses)):
         assert gw.nudge("main:1.0") is False
+
+
+# ── pane_snapshot: one-call address map ──────────────────────────────────────
+
+
+def test_pane_snapshot_parses_pane_lines():
+    gw = TmuxGateway()
+    out = b"%5 main:1.0\n%12 main:1.1\n%528 6:2.1\n"
+    with patch("server._tmux.subprocess.run", return_value=_FakeResult(0, out)):
+        assert gw.pane_snapshot() == {
+            "%5": "main:1.0",
+            "%12": "main:1.1",
+            "%528": "6:2.1",
+        }
+
+
+def test_pane_snapshot_returns_none_when_tmux_unreachable():
+    """None (not {}) so reconciliation skips the sync instead of treating
+    every pane as vanished."""
+    gw = TmuxGateway()
+    with patch("server._tmux.subprocess.run", return_value=_FakeResult(1, b"", b"no server")):
+        assert gw.pane_snapshot() is None
