@@ -18,15 +18,24 @@ from server._tmux import gateway
 def prune_dead_agents() -> set[str]:
     """Evict registry rows whose tmux pane is gone, or whose PID is dead.
 
+    Liveness keys on the stable pane_id (%N) when the row has one:
+    tmux_target (session:window.pane) is mutable under window
+    re-indexing, so after a kill an unrelated pane can inherit a dead
+    agent's target and make it look alive forever. Pane ids are never
+    reused within a tmux server. Legacy rows without pane_id fall back
+    to the tmux_target check.
+
     Returns the set of evicted agent_ids so callers can filter their
     own snapshots if needed.
     """
     with _db.db() as conn:
         alive_rows = conn.execute(
-            "SELECT agent_id, tmux_target FROM agents WHERE tmux_target != ''"
+            "SELECT agent_id, tmux_target, pane_id FROM agents WHERE tmux_target != ''"
         ).fetchall()
         dead_ids: set[str] = {
-            r["agent_id"] for r in alive_rows if not gateway.pane_alive(r["tmux_target"])
+            r["agent_id"]
+            for r in alive_rows
+            if not gateway.pane_alive(r["pane_id"] or r["tmux_target"])
         }
         no_tmux_rows = conn.execute(
             "SELECT agent_id, pid FROM agents WHERE tmux_target = '' AND pid IS NOT NULL"
@@ -126,22 +135,28 @@ def backfill_warroom_member_agent_ids(warroom_id: str = "") -> int:
             where = "WHERE m.warroom_id = ?"
             params = (warroom_id,)
 
+        # Join on the stable pane_id when the agent row has one;
+        # tmux_target is mutable under window re-indexing and can match
+        # an unrelated agent after a kill. Legacy agent rows without
+        # pane_id keep the tmux_target join.
         rows = conn.execute(
             f"""
             SELECT m.warroom_member_id,
                    m.tmux_target,
+                   m.pane_id,
                    m.state,
                    m.agent_instance_id,
                    a.agent_id AS registered_agent_id
             FROM warroom_members m
-            LEFT JOIN agents a ON a.tmux_target = m.tmux_target
+            LEFT JOIN agents a ON (a.pane_id != '' AND a.pane_id = m.pane_id)
+                OR (a.pane_id = '' AND a.tmux_target = m.tmux_target)
             {where}
             """,
             params,
         ).fetchall()
 
         for r in rows:
-            pane_alive = gateway.pane_alive(r["tmux_target"])
+            pane_alive = gateway.pane_alive(r["pane_id"] or r["tmux_target"])
             live_agent_id = r["registered_agent_id"] if pane_alive else None
             desired_state = "active" if live_agent_id else "pending"
 

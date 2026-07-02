@@ -7,8 +7,8 @@ Codex has no ``--agent <qualified-name>`` plugin analog. Specialist
 warroom panes are launched by passing a role-specific instructions file
 through ``--config model_instructions_file=<path>``. Codex also has no
 SessionStart/SessionEnd hook mechanism, so the adapter launches codex
-through ``plugin/hooks/codex-launch.sh`` which bootstraps registration
-on the bus and tears it down on exit.
+through the shared ``plugin/hooks/runtime-launch.sh`` wrapper which
+bootstraps registration on the bus and tears it down on exit.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from server.runtimes.base import LifecycleIntegration, register
 from server.runtimes.claude import CLAUDE
 
 _PLUGIN_HOOKS = Path(__file__).resolve().parent.parent.parent / "plugin" / "hooks"
-_LAUNCH_WRAPPER = _PLUGIN_HOOKS / "codex-launch.sh"
+_LAUNCH_WRAPPER = _PLUGIN_HOOKS / "runtime-launch.sh"
 
 # Codex's TUI surfaces a "do you want me to reply on the bus now?"
 # prompt to the human when an unsolicited inbox message arrives, even
@@ -86,7 +86,10 @@ class CodexRuntimeAdapter:
     _NAMESPACE = "codex"
 
     def build_launch_command(self, *, qualified_name: str | None) -> str:
-        cmd = shlex.quote(str(_LAUNCH_WRAPPER))
+        cmd = (
+            f"{shlex.quote(str(_LAUNCH_WRAPPER))} {self.runtime_id} {self.self_pid_env} "
+            "codex --dangerously-bypass-approvals-and-sandbox"
+        )
         if qualified_name is None:
             return cmd
 
@@ -185,7 +188,7 @@ class CodexRuntimeAdapter:
 
     def lifecycle_integration(self) -> LifecycleIntegration:
         # Codex has no SessionStart/SessionEnd hook mechanism, so the
-        # adapter-owned launch wrapper runs bus-register.sh up front and
+        # shared launch wrapper runs bus-register.sh up front and
         # installs EXIT/INT/TERM traps around bus-unregister.sh. The
         # wrapper is what build_launch_command returns.
         return LifecycleIntegration(

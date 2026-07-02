@@ -25,8 +25,9 @@ NUDGE_THROTTLE_SECONDS = 30
 # Runtimes whose TUI honors a tmux send-keys nudge. Unknown-runtime rows
 # predate multi-runtime bookkeeping and are not safe to nudge. Any new
 # runtime must be validated (hex-0d submit + literal text) before being
-# added here.
-_NUDGEABLE_RUNTIMES = frozenset({"claude", "codex"})
+# added here. Grok validated live 2026-07-02: the three-step submit
+# lands and the turn completes.
+_NUDGEABLE_RUNTIMES = frozenset({"claude", "codex", "grok", "grok-fast"})
 
 
 # ── Nudge throttling (data-layer policy, not tmux concern) ───────────────────
@@ -100,14 +101,14 @@ def _resolve_single(conn, *, sender_id: str, to: str) -> tuple[list[dict], str |
     """Resolve one address token. Returns (recipients, error_message_or_None)."""
     if to == "*":
         rows = conn.execute(
-            "SELECT agent_id, tmux_target, runtime FROM agents WHERE agent_id != ?",
+            "SELECT agent_id, tmux_target, pane_id, runtime FROM agents WHERE agent_id != ?",
             (sender_id,),
         ).fetchall()
         return [dict(r) for r in rows], None
     if to.startswith("role:"):
         role = to[len("role:") :]
         rows = conn.execute(
-            "SELECT agent_id, tmux_target, runtime FROM agents "
+            "SELECT agent_id, tmux_target, pane_id, runtime FROM agents "
             "WHERE agent_type = ? AND agent_id != ?",
             (role, sender_id),
         ).fetchall()
@@ -116,7 +117,7 @@ def _resolve_single(conn, *, sender_id: str, to: str) -> tuple[list[dict], str |
             return [], f"No agents with role '{role}' found in registry"
         return recipients, None
     row = conn.execute(
-        "SELECT agent_id, tmux_target, runtime FROM agents WHERE agent_id = ?",
+        "SELECT agent_id, tmux_target, pane_id, runtime FROM agents WHERE agent_id = ?",
         (to,),
     ).fetchone()
     if row is None:
@@ -217,7 +218,9 @@ def send(
 
     for recipient in recipients:
         target_id = recipient["agent_id"]
-        tmux_target = recipient.get("tmux_target", "")
+        # Prefer the stable pane_id (%N) for tmux addressing: tmux_target
+        # can point at an unrelated pane after window re-indexing.
+        tmux_target = recipient.get("pane_id") or recipient.get("tmux_target", "")
         runtime = recipient.get("runtime", "")
 
         payload = {
@@ -293,7 +296,8 @@ def nudge_direct(*, sender_id: str, to: str, content: str) -> dict:
 
     for recipient in recipients:
         target_id = recipient["agent_id"]
-        tmux_target = recipient.get("tmux_target", "")
+        # Same pane_id-first addressing as send(); see comment there.
+        tmux_target = recipient.get("pane_id") or recipient.get("tmux_target", "")
         runtime = recipient.get("runtime", "")
 
         if not tmux_target:

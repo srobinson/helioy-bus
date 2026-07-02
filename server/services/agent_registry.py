@@ -40,6 +40,7 @@ def register(
     session_id: str,
     agent_type: str,
     runtime: str = "",
+    pane_id: str = "",
     profile: dict | None,
 ) -> dict:
     """Insert or replace an agent registration.
@@ -60,24 +61,31 @@ def register(
     parent_pid = os.getppid()
     now = _db._now()
     profile_json = json.dumps(profile) if profile else None
+    # pane_id is caller-supplied, never sniffed from this process's env:
+    # tmux_target may describe a different pane than the one hosting the
+    # server (tests, orchestrators registering on behalf of others), and a
+    # wrong stable id is worse than none. The hook registrar passes its own
+    # $TMUX_PANE; rows without pane_id fall back to tmux_target liveness.
 
     with _db.db() as conn:
         if tmux_target:
             conn.execute(
-                "DELETE FROM agents WHERE tmux_target = ? AND agent_id != ?",
-                (tmux_target, agent_id),
+                "DELETE FROM agents WHERE agent_id != ? "
+                "AND (tmux_target = ? OR (pane_id != '' AND pane_id = ?))",
+                (agent_id, tmux_target, pane_id),
             )
         conn.execute(
             """
             INSERT OR REPLACE INTO agents
-                (agent_id, cwd, tmux_target, pid, session_id, agent_type,
-                 runtime, profile, registered_at, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (agent_id, cwd, tmux_target, pane_id, pid, session_id,
+                 agent_type, runtime, profile, registered_at, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 agent_id,
                 pwd,
                 tmux_target,
+                pane_id,
                 parent_pid,
                 session_id,
                 agent_type,

@@ -21,10 +21,12 @@ from server.runtimes.base import (
 )
 from server.runtimes.claude import ClaudeRuntimeAdapter
 from server.runtimes.codex import CodexRuntimeAdapter
+from server.runtimes.grok import GrokRuntimeAdapter
 
 __all__ = [
     "ClaudeRuntimeAdapter",
     "CodexRuntimeAdapter",
+    "GrokRuntimeAdapter",
     "LifecycleIntegration",
     "RuntimeAdapter",
     "default_adapter",

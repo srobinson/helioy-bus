@@ -13,17 +13,20 @@ in-process handler tests cannot see because they bypass the hooks.
 from __future__ import annotations
 
 import os
+import shlex
 import sqlite3
 import subprocess
 import time
 from pathlib import Path
 
-from server.runtimes.codex import CODEX_MESSAGE_SUFFIX
+from server.runtimes.codex import CODEX, CODEX_MESSAGE_SUFFIX
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-register.sh"
 UNREGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-unregister.sh"
-CODEX_LAUNCH = REPO_ROOT / "plugin" / "hooks" / "codex-launch.sh"
+# The real launch command the Codex adapter emits (wrapper + args), so the
+# smoke test exercises exactly what a warroom pane would run.
+CODEX_LAUNCH = shlex.split(CODEX.build_launch_command(qualified_name=None))
 TOKEN_CAPTURE_HOOK = REPO_ROOT / "plugin" / "hooks" / "token-capture.sh"
 
 SMOKE_PROJECT_DIR = "/tmp/helioy-smoke-repo"
@@ -266,7 +269,9 @@ def test_mixed_runtime_tmux_identity_smoke(
         "HELIOY_BUS_PYTHON_PATH": str(REPO_ROOT),
         "PATH": f"{stub_dir}:{os.environ.get('PATH', '')}",
         "TMUX": "/tmp/fake-tmux-socket,1234,0",
-        "HELIOY_TEST_ALIVE_TARGETS": f"{smoke_target},{codex_target}",
+        # Pane liveness keys on the stable pane id when a row has one, so
+        # the stub must report the %N ids alive alongside the targets.
+        "HELIOY_TEST_ALIVE_TARGETS": f"{smoke_target},{codex_target},%10,%11",
     }
 
     smoke_env = {
@@ -299,7 +304,7 @@ def test_mixed_runtime_tmux_identity_smoke(
         "HELIOY_TEST_SESSION_NAME": "main",
     }
     proc = subprocess.Popen(
-        ["bash", str(CODEX_LAUNCH)],
+        ["bash", *CODEX_LAUNCH],
         env=codex_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

@@ -27,22 +27,28 @@ def main() -> None:
 
     with db() as conn:
         tmux_target = os.environ["_HELIOY_TMUX"]
+        pane_id = os.environ.get("_HELIOY_PANE_ID", "")
         if tmux_target:
+            # Pane ownership eviction: a pane hosts one runtime at a time.
+            # Match on the stable pane_id too, so a stale row whose
+            # tmux_target drifted under window re-indexing is still evicted.
             conn.execute(
-                "DELETE FROM agents WHERE tmux_target = ? AND agent_id != ?",
-                (tmux_target, agent_id),
+                "DELETE FROM agents WHERE agent_id != ? "
+                "AND (tmux_target = ? OR (pane_id != '' AND pane_id = ?))",
+                (agent_id, tmux_target, pane_id),
             )
         conn.execute(
             """
             INSERT OR REPLACE INTO agents
-                (agent_id, cwd, tmux_target, pid, session_id, agent_type,
-                 runtime, registered_at, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (agent_id, cwd, tmux_target, pane_id, pid, session_id,
+                 agent_type, runtime, registered_at, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 agent_id,
                 os.environ["_HELIOY_PWD"],
                 tmux_target,
+                pane_id,
                 int(os.environ["_HELIOY_PID"]),
                 os.environ.get("_HELIOY_SESSION_ID", ""),
                 os.environ.get("_HELIOY_AGENT_TYPE", "general"),

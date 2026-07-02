@@ -106,8 +106,8 @@ def _self_agent_id() -> str:
     #      subprocesses, so this tier silently misses under Codex.
     #   2. pid ancestor walk — walks up the MCP server's ppid chain and
     #      looks for any ancestor pid registered in the agents table.
-    #      The codex-launch wrapper registers with its own pid
-    #      (HELIOY_BUS_CODEX_PID=$$) and stays alive as codex's parent,
+    #      The runtime-launch wrapper registers with its own pid
+    #      (e.g. HELIOY_BUS_CODEX_PID=$$) and stays alive as the runtime's parent,
     #      so the wrapper's pid is always an ancestor of any MCP process
     #      codex spawns. This tier carries Codex when env does not.
     tmux_target = _resolve_tmux_target()

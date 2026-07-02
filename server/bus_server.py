@@ -50,6 +50,7 @@ def register_agent(
     session_id: str = "",
     agent_type: str = "general",
     runtime: str = "",
+    pane_id: str = "",
     profile: dict | None = None,
 ) -> dict:
     """Register this runtime instance as an agent on the helioy-bus.
@@ -71,6 +72,10 @@ def register_agent(
                     "general". Used for role-based addressing in send_message.
         runtime: Runtime id for this registration (e.g. "claude", "codex").
                  Empty string falls back to HELIOY_RUNTIME, then "claude".
+        pane_id: Stable tmux pane id (%N) backing tmux_target. Pass
+                 $TMUX_PANE when registering your own pane. Unlike
+                 tmux_target it survives window re-indexing, so liveness
+                 checks and nudge addressing prefer it when present.
         profile: Optional agent profile dict with structural identity fields:
                  owns (list of repo/crate names), consumes (list of dependencies),
                  capabilities (list of available MCP server names),
@@ -87,6 +92,7 @@ def register_agent(
         session_id=session_id,
         agent_type=agent_type,
         runtime=runtime,
+        pane_id=pane_id,
         profile=profile,
     )
 

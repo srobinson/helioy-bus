@@ -19,7 +19,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-register.sh"
 UNREGISTER_HOOK = REPO_ROOT / "plugin" / "hooks" / "bus-unregister.sh"
-CODEX_LAUNCH = REPO_ROOT / "plugin" / "hooks" / "codex-launch.sh"
+RUNTIME_LAUNCH = REPO_ROOT / "plugin" / "hooks" / "runtime-launch.sh"
+# The wrapper args the Codex adapter emits (see CodexRuntimeAdapter
+# .build_launch_command); part of the wrapper's CLI contract under test.
+CODEX_LAUNCH = [
+    str(RUNTIME_LAUNCH),
+    "codex",
+    "HELIOY_BUS_CODEX_PID",
+    "codex",
+    "--dangerously-bypass-approvals-and-sandbox",
+]
 CHECK_MAIL_HOOK = REPO_ROOT / "plugin" / "hooks" / "check-mail.sh"
 TOKEN_CAPTURE_HOOK = REPO_ROOT / "plugin" / "hooks" / "token-capture.sh"
 RESOLVE_IDENTITY_TESTS = REPO_ROOT / "tests" / "test_resolve_identity.sh"
@@ -97,7 +106,7 @@ def test_bus_register_prefers_pinned_cwd_over_hijacked_pwd(isolated_bus, tmp_pat
     but with `memories = true` it runs that hook chdir'd into ~/.codex/memories.
     With cwd taken from the live working directory the registration records
     ~/.codex/memories and the agent_id repo prefix collapses to `memories:`, so
-    mail to `repo:agent` is lost. codex-launch.sh pins HELIOY_BUS_CWD to the real
+    mail to `repo:agent` is lost. runtime-launch.sh pins HELIOY_BUS_CWD to the real
     repo; bus-register.sh must prefer it over the hijacked working directory.
     """
     repo = "/tmp/helioy-codex-repo"
@@ -108,7 +117,7 @@ def test_bus_register_prefers_pinned_cwd_over_hijacked_pwd(isolated_bus, tmp_pat
     env = _hook_env(
         isolated_bus,
         CLAUDE_PROJECT_DIR="",  # codex does not set the Claude-only var
-        HELIOY_BUS_CWD=repo,  # pinned at pane start by codex-launch.sh
+        HELIOY_BUS_CWD=repo,  # pinned at pane start by runtime-launch.sh
         HELIOY_RUNTIME="codex",
     )
     env["PWD"] = str(hijacked)
@@ -391,7 +400,7 @@ def test_bus_register_claude_pane_title_still_resolves_agent_type(
     assert runtime == "claude"
 
 
-# ── codex-launch.sh: register + unregister lifecycle ─────────────────────────
+# ── runtime-launch.sh: register + unregister lifecycle ─────────────────────────
 
 
 def _install_codex_stub(tmp_dir: Path, marker: Path) -> Path:
@@ -420,7 +429,7 @@ def test_codex_launch_wrapper_registers_unregisters_and_runs_codex(
     env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
 
     result = subprocess.run(
-        ["bash", str(CODEX_LAUNCH)],
+        ["bash", *CODEX_LAUNCH],
         env=env,
         capture_output=True,
         text=True,
@@ -447,7 +456,7 @@ def test_codex_launch_wrapper_uses_stable_shell_for_hooks(isolated_bus, tmp_path
     """Hook scripts must not resolve `bash` through the session PATH.
 
     The fake `bash` records only when it is invoked with a helioy hook script,
-    which is the property under test (codex-launch.sh must run the register /
+    which is the property under test (runtime-launch.sh must run the register /
     unregister hooks via a stable absolute shell, never a PATH-resolved one).
     Incidental PATH-bash use by unrelated tools is passed through to the real
     bash so it cannot poison the signal: on a developer box `python3` is often a
@@ -475,7 +484,7 @@ def test_codex_launch_wrapper_uses_stable_shell_for_hooks(isolated_bus, tmp_path
     env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
 
     result = subprocess.run(
-        ["/bin/bash", str(CODEX_LAUNCH)],
+        ["/bin/bash", *CODEX_LAUNCH],
         env=env,
         capture_output=True,
         text=True,
@@ -512,7 +521,7 @@ def test_codex_launch_wrapper_records_codex_agent_type_in_registry(
     env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
 
     proc = subprocess.Popen(
-        ["bash", str(CODEX_LAUNCH)],
+        ["bash", *CODEX_LAUNCH],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -571,7 +580,7 @@ def test_codex_launch_wrapper_cleans_up_when_codex_fails(
     env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
 
     result = subprocess.run(
-        ["bash", str(CODEX_LAUNCH)],
+        ["bash", *CODEX_LAUNCH],
         env=env,
         capture_output=True,
         text=True,
