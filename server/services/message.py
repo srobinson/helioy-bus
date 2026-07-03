@@ -26,8 +26,9 @@ NUDGE_THROTTLE_SECONDS = 30
 # predate multi-runtime bookkeeping and are not safe to nudge. Any new
 # runtime must be validated (hex-0d submit + literal text) before being
 # added here. Grok validated live 2026-07-02: the three-step submit
-# lands and the turn completes.
-_NUDGEABLE_RUNTIMES = frozenset({"claude", "codex", "grok", "grok-fast"})
+# lands and the turn completes. claude-opus runs the same claude TUI,
+# so claude's validation covers it.
+_NUDGEABLE_RUNTIMES = frozenset({"claude", "claude-opus", "codex", "grok", "grok-fast"})
 
 
 # ── Nudge throttling (data-layer policy, not tmux concern) ───────────────────

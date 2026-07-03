@@ -114,8 +114,10 @@ resolve_agent_id() {
     # names its pane after the cwd, so a codex title here is the repo name,
     # not a role; honoring it would mint agent_type=<repo>. Gate on runtime
     # so codex falls through to the canonical general fallback (Step 3).
+    # The claude* glob covers every claude-family runtime id (claude,
+    # claude-opus, ...); they all run the same claude CLI.
     _BARE_AGENT_TYPE_PATTERN='^[a-zA-Z][a-zA-Z0-9_:-]*[a-zA-Z0-9]$'
-    if [[ "${HELIOY_RUNTIME:-claude}" == "claude" ]] \
+    if [[ "${HELIOY_RUNTIME:-claude}" == claude* ]] \
         && [[ -n "$title" ]] \
         && [[ "$title" != "Claude Code" ]] \
         && printf '%s' "$title" | grep -qE "$_BARE_AGENT_TYPE_PATTERN" \
@@ -142,9 +144,9 @@ resolve_agent_id() {
     # the pane title isn't set yet at SessionStart time. The process args
     # are the only reliable source of the agent type in this case. Like
     # Step 2.5 this is Claude-specific (`--agent` is a Claude flag), so it
-    # only runs for the claude runtime.
+    # only runs for claude-family runtimes.
     local _cli_agent_type=""
-    if [[ "${HELIOY_RUNTIME:-claude}" == "claude" ]]; then
+    if [[ "${HELIOY_RUNTIME:-claude}" == claude* ]]; then
         local _parent_args
         _parent_args=$(ps -p "$PPID" -o args= 2>/dev/null || true)
         if [[ -n "$_parent_args" ]]; then

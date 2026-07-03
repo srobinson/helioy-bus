@@ -3,6 +3,13 @@
 Owns every Claude Code specific assumption that used to live inline in the
 core bus: the ``claude`` CLI invocation, the ``HELIOY_BUS_CLAUDE_PID`` env
 var, and the ``~/.claude/plugins/cache`` lookup path.
+
+One adapter class, one registered instance per selectable model (same
+pattern as grok): no runtime takes a model parameter at spawn time, so
+each Claude model is its own runtime id:
+
+  * ``claude``       -> claude-fable-5 (the default runtime)
+  * ``claude-opus``  -> claude-opus-4-8
 """
 
 from __future__ import annotations
@@ -22,8 +29,13 @@ _CLAUDE_TOKENS_RE = re.compile(r"(\d+) tokens")
 
 
 class ClaudeRuntimeAdapter:
-    runtime_id = "claude"
+    """One registered instance per selectable model; see module docstring."""
+
+    # Both claude runtime ids share one env name: the SessionStart hook
+    # keys the PID file per pane, so identity resolution only needs the
+    # name to find it.
     self_pid_env = "HELIOY_BUS_CLAUDE_PID"
+
     # Claude acts on bus messages without human intermediation; no
     # authorization preamble is needed.
     message_suffix = ""
@@ -32,12 +44,21 @@ class ClaudeRuntimeAdapter:
     # so the session really is bound to that role from launch onward.
     supports_specialist_roles = True
 
-    _BASE_CMD = "claude --dangerously-skip-permissions --model claude-fable-5 --effort xhigh"
+    def __init__(self, runtime_id: str, model: str) -> None:
+        self.runtime_id = runtime_id
+        self.model = model
 
     def build_launch_command(self, *, qualified_name: str | None) -> str:
+        # HELIOY_RUNTIME pins the exact runtime id for the SessionStart
+        # hook; without it resolve_runtime would record every
+        # claude-family pane as plain "claude".
+        cmd = (
+            f"HELIOY_RUNTIME={self.runtime_id} claude "
+            f"--dangerously-skip-permissions --model {self.model} --effort xhigh"
+        )
         if qualified_name is None:
-            return self._BASE_CMD
-        return f"{self._BASE_CMD} --agent {qualified_name}"
+            return cmd
+        return f"{cmd} --agent {qualified_name}"
 
     def agents_cache_dir(self) -> Path:
         return Path.home() / ".claude" / "plugins" / "cache"
@@ -111,5 +132,7 @@ class ClaudeRuntimeAdapter:
         return {"tokens": int(matches[-1])}
 
 
-CLAUDE = ClaudeRuntimeAdapter()
+CLAUDE = ClaudeRuntimeAdapter("claude", "claude-fable-5")
+CLAUDE_OPUS = ClaudeRuntimeAdapter("claude-opus", "claude-opus-4-8")
 register(CLAUDE, default=True)
+register(CLAUDE_OPUS)

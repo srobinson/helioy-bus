@@ -89,7 +89,7 @@ def set_sender(monkeypatch):
 @pytest.fixture()
 def fake_plugins(tmp_path, monkeypatch):
     """Create a fake Claude plugin cache with known agent definitions."""
-    from server.runtimes.claude import CLAUDE
+    from server.runtimes.claude import CLAUDE, CLAUDE_OPUS
 
     cache = tmp_path / "plugins" / "cache"
 
@@ -121,6 +121,7 @@ def fake_plugins(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(CLAUDE, "agents_cache_dir", lambda: cache)
+    monkeypatch.setattr(CLAUDE_OPUS, "agents_cache_dir", lambda: cache)
 
     yield cache
 
