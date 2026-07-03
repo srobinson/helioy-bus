@@ -125,6 +125,58 @@ def test_warroom_spawn_with_mocked_tmux(fake_plugins, monkeypatch):
         assert len(members) == 2
 
 
+def test_warroom_spawn_general_agent_bypasses_catalogue(fake_plugins, monkeypatch):
+    """'general' spawns a raw pane (qualified_name None) alongside specialists."""
+    import server.warroom_server as wm
+    from server._db import db
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+
+    def mock_run(*args, **kw):
+        cmd = args[0]
+        if cmd == "display-message":
+            if "session_name" in args[-1]:
+                return "main"
+            return "main:1.0"
+        if cmd in ("new-window", "split-window"):
+            return "%42"
+        return ""
+
+    monkeypatch.setattr(gateway, "_run", mock_run)
+    monkeypatch.setattr(gateway, "spawn_pane", lambda **kw: {
+        "agent_type": kw["agent_type"],
+        "qualified_name": kw["qualified_name"],
+        "tmux_target": f"main:1.{0 if kw['is_first'] else 1}",
+        "pane_id": f"%{42 + (0 if kw['is_first'] else 1)}",
+    })
+
+    result = wm.warroom_spawn(
+        name="raw-mix",
+        agents=["general", "backend-engineer"],
+        cwd="/tmp/project",
+    )
+
+    assert "error" not in result
+    assert result["members"][0]["qualified_name"] is None
+    assert result["members"][0]["agent_type"] == "general"
+    assert result["members"][0]["desired_role"] == "general"
+    assert result["members"][1]["qualified_name"] == "helioy-tools:backend-engineer"
+    assert result["messaging"]["member_types"] == [
+        "general",
+        "helioy-tools:backend-engineer",
+    ]
+
+    with db() as conn:
+        roles = [
+            r["desired_role"]
+            for r in conn.execute(
+                "SELECT desired_role FROM warroom_members "
+                "WHERE warroom_id = 'raw-mix' ORDER BY spawn_order"
+            ).fetchall()
+        ]
+    assert roles == ["general", "helioy-tools:backend-engineer"]
+
+
 def test_warroom_spawn_includes_messaging_guidance(fake_plugins, monkeypatch):
     """Spawn response includes messaging guidance discouraging broadcast."""
     import server.warroom_server as wm

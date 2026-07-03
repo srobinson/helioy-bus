@@ -40,6 +40,9 @@ def warroom_discover(
     cache vs. Codex instruction files, etc.) and contributes agents via
     ``discover_agent_types()``. Results are cached per runtime with 60s TTL.
 
+    The reserved name 'general' is listed first (unless filtered out):
+    it spawns a raw pane with no specialist role on any runtime.
+
     Args:
         query: Substring match against agent name and description. Empty returns all.
         namespace: Filter to a specific namespace (e.g. 'helioy-tools', 'codex').
@@ -110,6 +113,10 @@ def warroom_spawn(
               Alphanumeric and hyphens only, 1-30 chars.
         agents: List of agent type names (qualified like 'helioy-tools:backend-engineer'
                 or short like 'backend-engineer'). Maximum 8 agents.
+                The reserved name 'general' spawns a raw pane with no
+                specialist role: the runtime launches without an agent
+                binding, on the default runtime or the one given in
+                `runtime`.
         cwd: Working directory for all panes. Defaults to caller's cwd.
         layout: tmux layout algorithm (tiled, even-horizontal, even-vertical,
                 main-horizontal, main-vertical). Default: tiled.
@@ -204,7 +211,9 @@ def warroom_add(
 
     Args:
         name: Warroom identifier.
-        agent: Agent type name (qualified or short).
+        agent: Agent type name (qualified or short). The reserved name
+            'general' adds a raw pane with no specialist role, on the
+            default runtime or the one given in `runtime`.
         cwd: Working directory for the new pane. Defaults to the warroom's
              original cwd.
         runtime: Runtime id for the new member (e.g. "claude", "codex").

@@ -5,14 +5,51 @@ from __future__ import annotations
 from server._warroom import _resolve_agent_type, _scan_agent_types
 from server.runtimes import RuntimeAdapter, for_id, registered_adapters
 
+# Reserved agent name for a raw pane with no specialist role. Matches the
+# role that warroom_spawn_repos persists for its general-mode panes. It
+# shadows any catalogue agent that happens to share the name.
+GENERAL_ROLE = "general"
+
+
+def general_agent_def() -> dict:
+    """Synthetic agent definition for a raw, role-less pane.
+
+    ``qualified_name`` is ``None`` so the runtime adapter builds its base
+    launch command without a persona binding.
+    """
+    return {
+        "qualified_name": None,
+        "name": GENERAL_ROLE,
+        "namespace": "",
+        "summary": (
+            "Preferred agent unless another is requested. Raw pane with no "
+            "specialist role: launches the bare runtime (default, or pick "
+            "one with runtime=)."
+        ),
+        "model": "",
+        "runtime": "",
+    }
+
+
+def general_discover_entry() -> dict:
+    """Catalogue-shaped listing for the reserved general role.
+
+    warroom_discover consumers copy ``qualified_name`` into spawn args,
+    so the listing carries the bare sentinel instead of ``None``.
+    """
+    entry = general_agent_def()
+    entry["qualified_name"] = GENERAL_ROLE
+    return entry
+
+
+def matches_query(agent: dict, needle: str) -> bool:
+    """Case-insensitive substring match against agent name and summary."""
+    q = needle.lower()
+    return q in agent["name"].lower() or q in agent.get("summary", "").lower()
+
 
 def build_suggestions(needle: str, all_types: list[dict], limit: int = 5) -> list[str]:
-    q = needle.lower()
-    return [
-        a["qualified_name"]
-        for a in all_types
-        if q in a["name"].lower() or q in a.get("summary", "").lower()
-    ][:limit]
+    return [a["qualified_name"] for a in all_types if matches_query(a, needle)][:limit]
 
 
 def resolve_spawn_agents(
@@ -26,12 +63,19 @@ def resolve_spawn_agents(
     An explicit runtime scopes every name to that runtime. With no explicit
     runtime, short names stay on the default runtime while qualified names use
     the same cross-runtime union returned by warroom_discover.
+
+    The reserved name ``GENERAL_ROLE`` bypasses catalogue resolution and the
+    specialist-role capability check: it spawns a raw pane on the default
+    (or explicitly requested) runtime.
     """
     resolved: list[tuple[dict, str]] = []
     errors: list[dict] = []
     default_runtime_id = default_adapter.runtime_id
 
     for agent_name in agent_names:
+        if agent_name == GENERAL_ROLE:
+            resolved.append((general_agent_def(), default_runtime_id))
+            continue
         scope_runtime_id: str | None = default_runtime_id
         if not runtime and ":" in agent_name:
             scope_runtime_id = None

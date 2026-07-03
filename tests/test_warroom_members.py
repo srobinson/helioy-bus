@@ -315,6 +315,48 @@ def test_warroom_add_to_existing(fake_plugins, monkeypatch):
     assert result["member_count"] == 2
 
 
+def test_warroom_add_general_agent(fake_plugins, monkeypatch):
+    """Adding 'general' launches a raw pane without catalogue resolution."""
+    from server._db import _now, db
+
+    import server.warroom_server as wm
+
+    now = _now()
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO warrooms (warroom_id, tmux_session, tmux_window, cwd, created_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("add-raw", "main", "add-raw", "/tmp/project", now, "active"),
+        )
+        _insert_member(
+            conn, warroom_id="add-raw", role="helioy-tools:backend-engineer",
+            tmux_target="main:1.0", pane_id="%10", now=now,
+        )
+
+    monkeypatch.setattr(gateway, "spawn_pane", lambda **kw: {
+        "agent_type": kw["agent_type"],
+        "qualified_name": kw["qualified_name"],
+        "tmux_target": "main:1.1",
+        "pane_id": "%11",
+    })
+    _stub_deferred_launch(monkeypatch, {"%10": "main:1.0", "%11": "main:1.1"})
+
+    result = wm.warroom_add(name="add-raw", agent="general")
+    assert "error" not in result
+    assert result["added"]["qualified_name"] is None
+    assert result["added"]["agent_type"] == "general"
+    assert result["added"]["desired_role"] == "general"
+    assert result["member_count"] == 2
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT desired_role FROM warroom_members "
+            "WHERE warroom_id = 'add-raw' AND pane_id = '%11'"
+        ).fetchone()
+    assert row["desired_role"] == "general"
+
+
 def test_warroom_add_preserves_stored_layout(fake_plugins, monkeypatch):
     """Add uses the persisted warroom layout instead of forcing tiled."""
     from server._db import _now, db

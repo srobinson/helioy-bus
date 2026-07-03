@@ -30,10 +30,14 @@ from server.runtimes import (
     registered_adapters,
 )
 from server.services.warroom_agents import (
-    build_suggestions as _build_suggestions,
+    GENERAL_ROLE,
+    general_agent_def,
+    general_discover_entry,
+    matches_query,
+    resolve_spawn_agents,
 )
 from server.services.warroom_agents import (
-    resolve_spawn_agents,
+    build_suggestions as _build_suggestions,
 )
 
 VALID_LAYOUTS = {
@@ -107,6 +111,15 @@ def kill_warrooms(conn: sqlite3.Connection, name: str, kill_all: bool) -> list[s
 def _short_role_name(role: str) -> str:
     """Return the short-name portion of a persisted desired_role."""
     return role.rsplit(":", 1)[-1]
+
+
+def _member_role(pane_info: dict) -> str:
+    """Canonical persisted role for a spawned pane.
+
+    Specialist panes carry their qualified name; raw panes fall back to
+    the agent_type ("general").
+    """
+    return pane_info["qualified_name"] or pane_info["agent_type"] or GENERAL_ROLE
 
 
 def _resolve_runtime(runtime: str) -> tuple[RuntimeAdapter | None, dict | None]:
@@ -394,10 +407,14 @@ def discover(
     if namespace:
         filtered = [a for a in filtered if a["namespace"] == namespace]
     if query:
-        q = query.lower()
-        filtered = [
-            a for a in filtered if q in a["name"].lower() or q in a.get("summary", "").lower()
-        ]
+        filtered = [a for a in filtered if matches_query(a, query)]
+
+    # The reserved general role is not a catalogue agent, so surface it
+    # explicitly, listed first. It belongs to no namespace and works on
+    # every runtime, hence only the query filter applies.
+    general = general_discover_entry()
+    if not namespace and (not query or matches_query(general, query)):
+        filtered = [general, *filtered]
 
     return {
         "agents": filtered[:limit],
@@ -470,7 +487,7 @@ def spawn_repos(
             now=now,
         )
         for order, m in enumerate(members):
-            role = m["qualified_name"] or m["agent_type"] or "general"
+            role = _member_role(m)
             member_id = insert_warroom_member(
                 conn,
                 warroom_id=window,
@@ -532,7 +549,9 @@ def spawn(
     if err:
         return err
     assert adapter is not None
-    if cap_err := _require_specialist_support(adapter):
+    # General panes carry no specialist role, so the capability gate only
+    # applies when at least one specialist agent is requested.
+    if any(a != GENERAL_ROLE for a in agents) and (cap_err := _require_specialist_support(adapter)):
         return cap_err
 
     if not cwd:
@@ -586,13 +605,13 @@ def spawn(
             now=now,
         )
         for order, m in enumerate(members):
-            qn = m["qualified_name"]
+            role = _member_role(m)
             member_runtime_id = m["runtime"]
             member_id = insert_warroom_member(
                 conn,
                 warroom_id=name,
                 runtime_id=member_runtime_id,
-                desired_role=qn,
+                desired_role=role,
                 desired_repo=None,
                 spawn_order=order,
                 tmux_target=m["tmux_target"],
@@ -602,12 +621,12 @@ def spawn(
             tag_member_pane(
                 m,
                 warroom_member_id=member_id,
-                desired_role=qn,
+                desired_role=role,
                 desired_runtime=member_runtime_id,
                 spawn_order=order,
             )
 
-    member_types = [m["qualified_name"] or m["agent_type"] for m in members]
+    member_types = [_member_role(m) for m in members]
 
     result = {
         "warroom_id": name,
@@ -727,19 +746,24 @@ def add(*, name: str, agent: str, cwd: str = "", runtime: str = "") -> dict:
     if err:
         return err
     assert adapter is not None
-    if cap_err := _require_specialist_support(adapter):
-        return cap_err
     runtime_id = adapter.runtime_id
 
-    agent_def = _resolve_agent_type(agent, runtime_id)
-    if not agent_def:
-        all_types = _scan_agent_types(runtime_id)
-        return {
-            "error": "Unknown agent type",
-            "suggestions": _build_suggestions(agent, all_types),
-        }
+    agent_def: dict | None
+    if agent == GENERAL_ROLE:
+        agent_def = general_agent_def()
+    else:
+        if cap_err := _require_specialist_support(adapter):
+            return cap_err
+        agent_def = _resolve_agent_type(agent, runtime_id)
+        if not agent_def:
+            all_types = _scan_agent_types(runtime_id)
+            return {
+                "error": "Unknown agent type",
+                "suggestions": _build_suggestions(agent, all_types),
+            }
 
     qn = agent_def["qualified_name"]
+    role = qn or agent_def["name"]
 
     with _db.db() as conn:
         wr = conn.execute(
@@ -786,7 +810,7 @@ def add(*, name: str, agent: str, cwd: str = "", runtime: str = "") -> dict:
             conn,
             warroom_id=name,
             runtime_id=runtime_id,
-            desired_role=qn,
+            desired_role=role,
             desired_repo=None,
             spawn_order=next_order,
             tmux_target=pane_info["tmux_target"],
@@ -800,7 +824,7 @@ def add(*, name: str, agent: str, cwd: str = "", runtime: str = "") -> dict:
     tag_member_pane(
         pane_info,
         warroom_member_id=member_id,
-        desired_role=qn,
+        desired_role=role,
         desired_runtime=runtime_id,
         spawn_order=next_order,
     )

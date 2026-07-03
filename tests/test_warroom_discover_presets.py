@@ -42,6 +42,24 @@ def test_warroom_discover_namespace_filter(fake_plugins):
     assert all(a["namespace"] == "helioy-tools" for a in result["agents"])
 
 
+def test_warroom_discover_lists_general_first(fake_plugins):
+    """The reserved 'general' role leads the listing and obeys filters."""
+    import server.warroom_server as wm
+
+    result = wm.warroom_discover()
+    assert result["agents"][0]["qualified_name"] == "general"
+
+    # Not a catalogue agent: hidden behind namespace and non-matching queries.
+    scoped = wm.warroom_discover(namespace="helioy-tools")
+    assert all(a["qualified_name"] != "general" for a in scoped["agents"])
+    queried = wm.warroom_discover(query="backend")
+    assert all(a["qualified_name"] != "general" for a in queried["agents"])
+
+    # Found by a matching query.
+    raw = wm.warroom_discover(query="general")
+    assert raw["agents"][0]["qualified_name"] == "general"
+
+
 def test_warroom_discover_limit(fake_plugins):
     """Limit caps the number of returned results."""
     import server.warroom_server as wm
