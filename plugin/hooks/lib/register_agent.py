@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Register a hook-launched agent with the helioy-bus registry."""
+"""Register a hook-launched agent with the helioy-bus registry.
+
+Thin env-to-kwargs shim over ``server.services.agent_registry.register``
+so the hook path and the MCP tool path share one implementation of
+eviction scoping and identity continuity. The two used to carry
+separate copies of the eviction SQL, which is how the survivor-eviction
+bug outlived the bus-prune.sh fix.
+"""
 
 from __future__ import annotations
 
@@ -12,8 +19,8 @@ def main() -> None:
     root = os.environ["HELIOY_BUS_ROOT"]
     sys.path.insert(0, root)
 
-    from server._db import _now, db
     import server._db as db_mod
+    from server.services import agent_registry
 
     bus_dir = Path(os.environ["_HELIOY_BUS_DIR"])
     inbox_base = Path(os.environ["_HELIOY_INBOX_BASE"])
@@ -21,42 +28,27 @@ def main() -> None:
     db_mod.REGISTRY_DB = bus_dir / "registry.db"
     db_mod.INBOX_DIR = inbox_base
 
-    agent_id = os.environ["_HELIOY_AGENT_ID"]
-    inbox = inbox_base / agent_id
-    inbox.mkdir(parents=True, exist_ok=True)
+    result = agent_registry.register(
+        pwd=os.environ["_HELIOY_PWD"],
+        tmux_target=os.environ["_HELIOY_TMUX"],
+        agent_id=os.environ["_HELIOY_AGENT_ID"],
+        session_id=os.environ.get("_HELIOY_SESSION_ID", ""),
+        agent_type=os.environ.get("_HELIOY_AGENT_TYPE", "general"),
+        runtime=os.environ.get("_HELIOY_RUNTIME", "claude"),
+        pane_id=os.environ.get("_HELIOY_PANE_ID", ""),
+        profile=None,
+        pid=int(os.environ["_HELIOY_PID"]),
+        id_source=os.environ.get("_HELIOY_ID_SOURCE", ""),
+    )
 
-    with db() as conn:
-        tmux_target = os.environ["_HELIOY_TMUX"]
-        pane_id = os.environ.get("_HELIOY_PANE_ID", "")
-        if tmux_target:
-            # Pane ownership eviction: a pane hosts one runtime at a time.
-            # Match on the stable pane_id too, so a stale row whose
-            # tmux_target drifted under window re-indexing is still evicted.
-            conn.execute(
-                "DELETE FROM agents WHERE agent_id != ? "
-                "AND (tmux_target = ? OR (pane_id != '' AND pane_id = ?))",
-                (agent_id, tmux_target, pane_id),
-            )
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO agents
-                (agent_id, cwd, tmux_target, pane_id, pid, session_id,
-                 agent_type, runtime, registered_at, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                agent_id,
-                os.environ["_HELIOY_PWD"],
-                tmux_target,
-                pane_id,
-                int(os.environ["_HELIOY_PID"]),
-                os.environ.get("_HELIOY_SESSION_ID", ""),
-                os.environ.get("_HELIOY_AGENT_TYPE", "general"),
-                os.environ.get("_HELIOY_RUNTIME", "claude"),
-                _now(),
-                _now(),
-            ),
-        )
+    # Identity continuity may have adopted a different agent_id than the
+    # shell resolver minted; the PID mapping written by bus-register.sh
+    # before this script ran must follow the final id or self-identity
+    # (whoami, send_message sender resolution) would diverge.
+    final_id = result["agent_id"]
+    pids_dir = bus_dir / "pids"
+    pids_dir.mkdir(parents=True, exist_ok=True)
+    (pids_dir / os.environ["_HELIOY_PID"]).write_text(final_id)
 
 
 if __name__ == "__main__":

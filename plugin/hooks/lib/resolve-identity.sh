@@ -5,6 +5,12 @@
 #   HELIOY_AGENT_ID:    full agent_id (pane-title derived or basename fallback)
 #   HELIOY_AGENT_TYPE:  specialist role, e.g. "general", "backend-engineer"
 #   HELIOY_AGENT_REPO:  repository/project name (basename of working directory)
+#   HELIOY_ID_SOURCE:   which branch resolved the id: "pane_title" (canonical
+#                       title), "bare_title", "cli_args", or "fallback"
+#                       (minted from the CURRENT tmux address). Registration
+#                       treats "fallback" ids as weak: the pane's existing
+#                       registry row wins, keeping bus ids stable across
+#                       /clear, compaction, and window re-indexing.
 #
 # Canonical identity shape (see server/_identity.py for Python-side contract):
 #   With tmux:    {repo}:{agent_type}:{session}:{window}.{pane}
@@ -100,7 +106,8 @@ resolve_agent_id() {
         local _without_swp="${_without_wp%:*}" # drop :session
         # agent_type = everything between repo: and :session
         HELIOY_AGENT_TYPE="${_without_swp#*:}"
-        export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO
+        HELIOY_ID_SOURCE="pane_title"
+        export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO HELIOY_ID_SOURCE
         return 0
     fi
 
@@ -135,7 +142,8 @@ resolve_agent_id() {
             HELIOY_AGENT_ID="${repo}:${title}"
         fi
 
-        export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO
+        HELIOY_ID_SOURCE="bare_title"
+        export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO HELIOY_ID_SOURCE
         return 0
     fi
 
@@ -173,7 +181,8 @@ resolve_agent_id() {
             HELIOY_AGENT_ID="${repo}:${_cli_agent_type}"
         fi
 
-        export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO
+        HELIOY_ID_SOURCE="cli_args"
+        export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO HELIOY_ID_SOURCE
         return 0
     fi
 
@@ -193,5 +202,9 @@ resolve_agent_id() {
         HELIOY_AGENT_ID="${repo}:${HELIOY_AGENT_TYPE}"
     fi
 
-    export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO
+    # Fallback ids are minted from the CURRENT tmux address, which after
+    # window re-indexing can be another agent's birth address. Mark the
+    # provenance so registration prefers the pane's existing identity.
+    HELIOY_ID_SOURCE="fallback"
+    export HELIOY_AGENT_ID HELIOY_AGENT_TYPE HELIOY_AGENT_REPO HELIOY_ID_SOURCE
 }

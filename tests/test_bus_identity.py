@@ -3,6 +3,190 @@
 from __future__ import annotations
 
 
+def _seed_agent(agent_id: str, *, tmux_target: str, pane_id: str, cwd: str = "/tmp/proj",
+                agent_type: str = "general") -> None:
+    from server._db import _now, db
+
+    now = _now()
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO agents (agent_id, cwd, tmux_target, pane_id, pid, session_id, "
+            "agent_type, runtime, registered_at, last_seen) "
+            "VALUES (?, ?, ?, ?, 1, '', ?, 'claude', ?, ?)",
+            (agent_id, cwd, tmux_target, pane_id, agent_type, now, now),
+        )
+
+
+def _agent_row(agent_id: str):
+    from server._db import db
+
+    with db() as conn:
+        return conn.execute(
+            "SELECT * FROM agents WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+
+
+# ── Registration eviction scoping (window re-indexing safety) ─────────────────
+# A killed window re-indexes survivors, so a live agent's recorded
+# tmux_target can be claimed by a different pane's fresh registration.
+# Eviction must key on the stable pane_id; the address arm is only for
+# legacy rows without one. Reproduced live 2026-07-09: the old
+# target-based arm deleted live survivors.
+
+
+def test_register_eviction_spares_live_row_with_drifted_target():
+    """A pane_id-carrying row whose stale target collides with a newcomer's
+    fresh address is a different, live pane. It must survive."""
+    from server.services import agent_registry
+
+    _seed_agent("proj:general:6:3.1", tmux_target="6:2.1", pane_id="%10")
+
+    agent_registry.register(
+        pwd="/tmp/proj", tmux_target="6:2.1", agent_id="proj:general:6:2.1",
+        session_id="", agent_type="general", pane_id="%11", profile=None,
+    )
+
+    assert _agent_row("proj:general:6:3.1") is not None, "live survivor was evicted"
+    assert _agent_row("proj:general:6:2.1") is not None
+
+
+def test_register_eviction_evicts_prior_occupant_of_same_pane():
+    """Same pane, different identity: the previous occupant row is stale
+    by definition and must be evicted (ownership assertion)."""
+    from server.services import agent_registry
+
+    _seed_agent("proj:general:6:3.1", tmux_target="6:3.1", pane_id="%11")
+
+    agent_registry.register(
+        pwd="/tmp/proj", tmux_target="6:2.1", agent_id="proj:reviewer:6:2.1",
+        session_id="", agent_type="reviewer", pane_id="%11", profile=None,
+    )
+
+    assert _agent_row("proj:general:6:3.1") is None
+    assert _agent_row("proj:reviewer:6:2.1") is not None
+
+
+def test_register_eviction_evicts_legacy_row_claiming_target():
+    """Rows without pane_id have no stable identity: an address claim is
+    the only signal, so the new occupant of that address wins."""
+    from server.services import agent_registry
+
+    _seed_agent("proj:general:6:2.1", tmux_target="6:2.1", pane_id="")
+
+    agent_registry.register(
+        pwd="/tmp/proj", tmux_target="6:2.1", agent_id="proj:reviewer:6:2.1",
+        session_id="", agent_type="reviewer", pane_id="%12", profile=None,
+    )
+
+    assert _agent_row("proj:general:6:2.1") is None
+    assert _agent_row("proj:reviewer:6:2.1") is not None
+
+
+# ── Identity continuity (fallback ids reuse the pane's registration) ──────────
+# After /clear or compaction the TUI has clobbered the canonical pane
+# title, so the hook resolver mints an id from the CURRENT address. After
+# re-indexing that can be another agent's birth address: registering the
+# minted id would silently steal that agent's row (identity takeover,
+# reproduced live 2026-07-09). The pane's existing row is the truth.
+
+
+def test_register_fallback_id_reuses_pane_identity_instead_of_taking_over():
+    """The reproduced takeover: w3 re-registers with a fallback id equal to
+    w2's birth id. Reuse w3's own identity; leave w2 untouched."""
+    from server.services import agent_registry
+
+    _seed_agent("proj:general:6:3.1", tmux_target="6:2.1", pane_id="%20")  # w2 (healed)
+    _seed_agent("proj:general:6:4.1", tmux_target="6:4.1", pane_id="%21")  # w3 (stale)
+
+    # w3's SessionStart re-fires at its new address 6:3.1 and mints w2's id.
+    result = agent_registry.register(
+        pwd="/tmp/proj", tmux_target="6:3.1", agent_id="proj:general:6:3.1",
+        session_id="", agent_type="general", pane_id="%21", profile=None,
+        id_source="fallback",
+    )
+
+    assert result["agent_id"] == "proj:general:6:4.1", "w3 must keep its birth id"
+    w3 = _agent_row("proj:general:6:4.1")
+    assert w3 is not None and w3["tmux_target"] == "6:3.1"
+    w2 = _agent_row("proj:general:6:3.1")
+    assert w2 is not None and w2["pane_id"] == "%20", "w2's row was taken over"
+
+
+def test_register_empty_agent_id_reuses_pane_identity_and_type():
+    """MCP path: no explicit id resolves to the pane's existing identity,
+    preserving a specialist agent_type across re-registration."""
+    from server.services import agent_registry
+
+    _seed_agent(
+        "proj:backend-engineer:6:3.1", tmux_target="6:3.1", pane_id="%30",
+        agent_type="backend-engineer",
+    )
+
+    result = agent_registry.register(
+        pwd="/tmp/proj", tmux_target="6:2.1", agent_id="",
+        session_id="", agent_type="general", pane_id="%30", profile=None,
+    )
+
+    assert result["agent_id"] == "proj:backend-engineer:6:3.1"
+    row = _agent_row("proj:backend-engineer:6:3.1")
+    assert row["agent_type"] == "backend-engineer"
+    assert row["tmux_target"] == "6:2.1"
+
+
+def test_register_disambiguates_when_id_claimed_by_live_pane(monkeypatch):
+    """Address-derived ids are not unique over time: a fresh registration
+    whose id equals a LIVE agent's birth id must never REPLACE that row.
+    It takes a pane-suffixed id instead; the claimant is untouched."""
+    from server._tmux import gateway
+    from server.services import agent_registry
+
+    _seed_agent("proj:general:6:3.1", tmux_target="6:2.1", pane_id="%20")
+    monkeypatch.setattr(gateway, "pane_alive", lambda target: True)
+
+    result = agent_registry.register(
+        pwd="/tmp/proj", tmux_target="6:3.1", agent_id="proj:general:6:3.1",
+        session_id="", agent_type="general", pane_id="%50", profile=None,
+    )
+
+    assert result["agent_id"] == "proj:general:6:3.1:%50"
+    claimant = _agent_row("proj:general:6:3.1")
+    assert claimant is not None and claimant["pane_id"] == "%20", "claimant row stolen"
+    assert _agent_row("proj:general:6:3.1:%50")["pane_id"] == "%50"
+
+
+def test_register_reclaims_id_from_dead_pane(monkeypatch):
+    """A claimant whose pane is gone is a leak: evict it and keep the id."""
+    from server._tmux import gateway
+    from server.services import agent_registry
+
+    _seed_agent("proj:general:6:3.1", tmux_target="6:3.1", pane_id="%20")
+    monkeypatch.setattr(gateway, "pane_alive", lambda target: False)
+
+    result = agent_registry.register(
+        pwd="/tmp/proj", tmux_target="6:3.1", agent_id="proj:general:6:3.1",
+        session_id="", agent_type="general", pane_id="%50", profile=None,
+    )
+
+    assert result["agent_id"] == "proj:general:6:3.1"
+    assert _agent_row("proj:general:6:3.1")["pane_id"] == "%50"
+
+
+def test_register_fallback_id_ignores_pane_row_from_other_project():
+    """A pane relaunched from a different cwd is a new agent, not a
+    continuation: no reuse across projects."""
+    from server.services import agent_registry
+
+    _seed_agent("other:general:6:3.1", tmux_target="6:3.1", pane_id="%40", cwd="/tmp/other")
+
+    result = agent_registry.register(
+        pwd="/tmp/proj", tmux_target="6:3.1", agent_id="proj:general:6:3.1",
+        session_id="", agent_type="general", pane_id="%40", profile=None,
+        id_source="fallback",
+    )
+
+    assert result["agent_id"] == "proj:general:6:3.1"
+
+
 # ── Canonical identity contract ───────────────────────────────────────────────
 
 

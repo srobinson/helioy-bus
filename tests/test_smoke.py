@@ -238,6 +238,41 @@ def test_full_lifecycle_smoke(isolated_bus, set_sender, tmp_path):
     assert rows == []
 
 
+def test_session_end_clear_keeps_registration(isolated_bus):
+    """/clear and compaction restart the conversation, not the runtime: the
+    same claude keeps running in the same pane and SessionStart re-fires.
+    SessionEnd with those reasons must keep the row and PID file so the
+    restart's identity-continuity lookup can reuse the pane's identity
+    (deleting them forced an address-minted id and enabled the identity
+    takeover reproduced live 2026-07-09)."""
+    reg = _run_hook(REGISTER_HOOK, isolated_bus, stdin='{"session_id":"smoke-session"}')
+    assert reg.returncode == 0, reg.stderr
+    pid_file = isolated_bus / "pids" / str(os.getpid())
+    assert pid_file.exists()
+
+    def _smoke_rows() -> list:
+        conn = sqlite3.connect(isolated_bus / "registry.db")
+        try:
+            return conn.execute(
+                "SELECT agent_id FROM agents WHERE agent_id = ?", (SMOKE_AGENT_ID,)
+            ).fetchall()
+        finally:
+            conn.close()
+
+    for reason in ("clear", "compact"):
+        unreg = _run_hook(
+            UNREGISTER_HOOK, isolated_bus, stdin=f'{{"reason":"{reason}"}}'
+        )
+        assert unreg.returncode == 0, unreg.stderr
+        assert _smoke_rows(), f"reason={reason} must not unregister"
+        assert pid_file.exists(), f"reason={reason} must keep the PID file"
+
+    unreg = _run_hook(UNREGISTER_HOOK, isolated_bus, stdin='{"reason":"exit"}')
+    assert unreg.returncode == 0, unreg.stderr
+    assert _smoke_rows() == []
+    assert not pid_file.exists()
+
+
 def test_mixed_runtime_tmux_identity_smoke(
     isolated_bus, set_sender, tmp_path, monkeypatch
 ):

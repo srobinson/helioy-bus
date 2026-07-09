@@ -13,6 +13,30 @@ BUS_DIR="${HELIOY_BUS_DIR:-$HOME/.helioy/bus}"
 DB_PATH="$BUS_DIR/registry.db"
 PIDS_DIR="$BUS_DIR/pids"
 
+# /clear and compaction end the *conversation*, not the runtime process:
+# the same claude keeps running in the same pane and SessionStart re-fires
+# immediately. Unregistering here would delete the row that the restart's
+# identity-continuity lookup needs, forcing it to mint a fresh id from the
+# CURRENT tmux address — which after window re-indexing can be another
+# agent's birth id (identity takeover, reproduced live 2026-07-09). Keep
+# the registration and the PID file; only true session ends unregister.
+# Bounded stdin read: Claude's hook runner can leave stdin open (see
+# bus-register.sh), so never block on a plain `cat`.
+STDIN_JSON=""
+_stdin_ch=""
+if IFS= read -r -n 1 -t 1 _stdin_ch; then
+    STDIN_JSON="$_stdin_ch"
+    while IFS= read -r -n 1 -t 1 _stdin_ch; do
+        STDIN_JSON+="$_stdin_ch"
+    done
+fi
+unset _stdin_ch
+REASON=$(echo "${STDIN_JSON:-{}}" | jq -r '.reason // empty' 2>/dev/null || true)
+if [[ "$REASON" == "clear" || "$REASON" == "compact" ]]; then
+    echo "{}"
+    exit 0
+fi
+
 # Prefer PID file written at SessionStart (guaranteed to match the registered ID).
 # Fall back to shared identity resolution when no PID file is present.
 PID_FILE="$PIDS_DIR/$PPID"
