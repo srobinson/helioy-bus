@@ -51,7 +51,7 @@ def test_build_launch_command_role_mode_includes_agent_flag():
     assert cmd.startswith("HELIOY_RUNTIME=claude claude ")
     assert "--dangerously-skip-permissions" in cmd
     assert "--model claude-fable-5" in cmd
-    assert "--effort xhigh" in cmd
+    assert "--effort high" in cmd
     assert "--agent helioy-tools:backend-engineer" in cmd
 
 
@@ -60,7 +60,7 @@ def test_build_launch_command_repo_mode_omits_agent_flag():
     assert cmd.startswith("HELIOY_RUNTIME=claude claude ")
     assert "--dangerously-skip-permissions" in cmd
     assert "--model claude-fable-5" in cmd
-    assert "--effort xhigh" in cmd
+    assert "--effort high" in cmd
     assert "--agent" not in cmd
 
 
@@ -329,12 +329,17 @@ def test_codex_build_launch_command_points_at_launch_wrapper():
     assert wrapper.name == "runtime-launch.sh"
     assert wrapper.exists(), f"wrapper missing: {wrapper}"
     # The adapter owns the full codex invocation, including the approved
-    # launch mode; the wrapper only wraps lifecycle around it.
-    assert parts[1:5] == [
+    # launch mode and the pinned model/effort; the wrapper only wraps
+    # lifecycle around it.
+    assert parts[1:9] == [
         "codex",
         "HELIOY_BUS_CODEX_PID",
         "codex",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--model",
+        "gpt-5.6-sol",
+        "--config",
+        "model_reasoning_effort=xhigh",
     ]
 
 

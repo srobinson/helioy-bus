@@ -85,10 +85,18 @@ class CodexRuntimeAdapter:
     # instruction files, so all discovered roles share one namespace.
     _NAMESPACE = "codex"
 
+    # Pin model and reasoning effort at launch so warroom panes are
+    # deterministic instead of inheriting whatever ~/.codex/config.toml
+    # currently defaults to (same discipline as the claude and grok
+    # adapters pinning their models).
+    _MODEL = "gpt-5.6-sol"
+    _REASONING_EFFORT = "xhigh"
+
     def build_launch_command(self, *, qualified_name: str | None) -> str:
         cmd = (
             f"{shlex.quote(str(_LAUNCH_WRAPPER))} {self.runtime_id} {self.self_pid_env} "
-            "codex --dangerously-bypass-approvals-and-sandbox"
+            f"codex --dangerously-bypass-approvals-and-sandbox "
+            f"--model {self._MODEL} --config model_reasoning_effort={self._REASONING_EFFORT}"
         )
         if qualified_name is None:
             return cmd
