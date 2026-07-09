@@ -158,7 +158,11 @@ def send_message(
     topic: str = "",
     nudge: bool = True,
 ) -> dict:
-    """Send a message to another agent's mailbox.
+    """Send a message to one or more agents' mailboxes.
+
+    `to` accepts multiple recipients in a single call, ";"-delimited
+    (e.g. "alice;bob;role:reviewer"): one message, delivered to each
+    recipient's inbox with its own optional nudge.
 
     Writes an atomic JSON file to ~/.helioy/bus/inbox/{to}/ and optionally
     sends a tmux nudge to wake the recipient if it is idle.
