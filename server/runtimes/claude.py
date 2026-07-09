@@ -54,7 +54,7 @@ class ClaudeRuntimeAdapter:
         # claude-family pane as plain "claude".
         cmd = (
             f"HELIOY_RUNTIME={self.runtime_id} claude "
-            f"--dangerously-skip-permissions --model {self.model} --effort xhigh"
+            f"--dangerously-skip-permissions --model {self.model} --effort high"
         )
         if qualified_name is None:
             return cmd

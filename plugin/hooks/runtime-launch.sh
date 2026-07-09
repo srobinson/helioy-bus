@@ -41,7 +41,11 @@ export HELIOY_RUNTIME="$RUNTIME_ID"
 export HELIOY_BUS_CWD="$PWD"
 
 cleanup() {
-    "$HOOK_SHELL" "$HOOKS_DIR/bus-unregister.sh" || true
+    # </dev/null: unregister reads stdin for the SessionEnd reason with a
+    # bounded timeout. The trap has no payload to offer, and an inherited
+    # open stdin would stall the read (and the teardown) for the full
+    # timeout on every pane kill. EOF resolves it instantly.
+    "$HOOK_SHELL" "$HOOKS_DIR/bus-unregister.sh" </dev/null || true
 }
 # HUP matters: tmux kill-window/kill-session deliver SIGHUP, and bash
 # skips the EXIT trap on an untrapped fatal signal, so without it every
