@@ -7,7 +7,7 @@ across a full turn), so registration rides the shared launch wrapper like
 Codex.
 
 One adapter class, one registered instance per selectable model. No
-runtime takes a model parameter at spawn time (Claude pins claude-fable-5
+runtime takes a model parameter at spawn time (Claude pins claude-fable-5[1m]
 the same way), so each grok model is its own runtime id rather than
 plumbing model selection through the warroom:
 

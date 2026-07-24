@@ -8,8 +8,13 @@ One adapter class, one registered instance per selectable model (same
 pattern as grok): no runtime takes a model parameter at spawn time, so
 each Claude model is its own runtime id:
 
-  * ``claude``       -> claude-fable-5 (the default runtime)
-  * ``claude-opus``  -> claude-opus-4-8
+  * ``claude``       -> claude-fable-5[1m] (the default runtime)
+  * ``claude-opus``  -> claude-opus-5[1m]
+
+The ``[1m]`` suffix pins the 1M context tier. Without it the CLI falls
+back to whatever ``~/.claude/settings.json`` currently defaults to, which
+any ``/model`` press inside a pane silently rewrites; warroom panes must
+not inherit that drift.
 """
 
 from __future__ import annotations
@@ -132,7 +137,7 @@ class ClaudeRuntimeAdapter:
         return {"tokens": int(matches[-1])}
 
 
-CLAUDE = ClaudeRuntimeAdapter("claude", "claude-fable-5")
-CLAUDE_OPUS = ClaudeRuntimeAdapter("claude-opus", "claude-opus-4-8")
+CLAUDE = ClaudeRuntimeAdapter("claude", "claude-fable-5[1m]")
+CLAUDE_OPUS = ClaudeRuntimeAdapter("claude-opus", "claude-opus-5[1m]")
 register(CLAUDE, default=True)
 register(CLAUDE_OPUS)
