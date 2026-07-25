@@ -52,7 +52,7 @@ def test_claude_opus_launch_command_pins_runtime_and_model():
     registration misrecords the pane's runtime."""
     cmd = CLAUDE_OPUS.build_launch_command(qualified_name=None)
     assert cmd.startswith("HELIOY_RUNTIME=claude-opus claude ")
-    assert "--model claude-opus-5[1m]" in cmd
+    assert '--model "claude-opus-5[1m]"' in cmd
     assert "--dangerously-skip-permissions" in cmd
     assert "--agent" not in cmd
 
@@ -60,7 +60,7 @@ def test_claude_opus_launch_command_pins_runtime_and_model():
 def test_claude_opus_launch_command_role_mode_includes_agent_flag():
     cmd = CLAUDE_OPUS.build_launch_command(qualified_name="helioy-tools:backend-engineer")
     assert cmd.startswith("HELIOY_RUNTIME=claude-opus claude ")
-    assert "--model claude-opus-5[1m]" in cmd
+    assert '--model "claude-opus-5[1m]"' in cmd
     assert "--agent helioy-tools:backend-engineer" in cmd
 
 

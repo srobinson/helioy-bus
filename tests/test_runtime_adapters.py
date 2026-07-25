@@ -50,7 +50,7 @@ def test_build_launch_command_role_mode_includes_agent_flag():
     cmd = CLAUDE.build_launch_command(qualified_name="helioy-tools:backend-engineer")
     assert cmd.startswith("HELIOY_RUNTIME=claude claude ")
     assert "--dangerously-skip-permissions" in cmd
-    assert "--model claude-fable-5[1m]" in cmd
+    assert '--model "claude-fable-5[1m]"' in cmd
     assert "--effort high" in cmd
     assert "--agent helioy-tools:backend-engineer" in cmd
 
@@ -59,7 +59,7 @@ def test_build_launch_command_repo_mode_omits_agent_flag():
     cmd = CLAUDE.build_launch_command(qualified_name=None)
     assert cmd.startswith("HELIOY_RUNTIME=claude claude ")
     assert "--dangerously-skip-permissions" in cmd
-    assert "--model claude-fable-5[1m]" in cmd
+    assert '--model "claude-fable-5[1m]"' in cmd
     assert "--effort high" in cmd
     assert "--agent" not in cmd
 
