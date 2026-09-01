@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 
-def _seed_agent(agent_id: str, *, tmux_target: str, pane_id: str, cwd: str = "/tmp/proj",
-                agent_type: str = "general") -> None:
+def _seed_agent(
+    agent_id: str,
+    *,
+    tmux_target: str,
+    pane_id: str,
+    cwd: str = "/tmp/proj",
+    agent_type: str = "general",
+    pid: int = 1,
+) -> None:
     from server._db import _now, db
 
     now = _now()
@@ -12,8 +19,8 @@ def _seed_agent(agent_id: str, *, tmux_target: str, pane_id: str, cwd: str = "/t
         conn.execute(
             "INSERT INTO agents (agent_id, cwd, tmux_target, pane_id, pid, session_id, "
             "agent_type, runtime, registered_at, last_seen) "
-            "VALUES (?, ?, ?, ?, 1, '', ?, 'claude', ?, ?)",
-            (agent_id, cwd, tmux_target, pane_id, agent_type, now, now),
+            "VALUES (?, ?, ?, ?, ?, '', ?, 'claude', ?, ?)",
+            (agent_id, cwd, tmux_target, pane_id, pid, agent_type, now, now),
         )
 
 
@@ -131,6 +138,70 @@ def test_register_empty_agent_id_reuses_pane_identity_and_type():
     row = _agent_row("proj:backend-engineer:6:3.1")
     assert row["agent_type"] == "backend-engineer"
     assert row["tmux_target"] == "6:2.1"
+
+
+def test_register_fallback_id_reuses_identity_when_same_process_changes_cwd():
+    """Codex memories hooks run under ~/.codex/memories. The same runtime
+    process must keep the repository identity and repository cwd registered
+    by its initial SessionStart hook."""
+    from server.services import agent_registry
+
+    _seed_agent(
+        "transport-matters:general:1:4.1",
+        tmux_target="1:4.1",
+        pane_id="%432",
+        cwd="/work/transport-matters",
+        pid=42036,
+    )
+
+    result = agent_registry.register(
+        pwd="/Users/alphab/.codex/memories",
+        tmux_target="1:4.1",
+        agent_id="memories:general:1:4.1",
+        session_id="same-session",
+        agent_type="general",
+        runtime="codex",
+        pane_id="%432",
+        profile=None,
+        pid=42036,
+        id_source="fallback",
+    )
+
+    assert result["agent_id"] == "transport-matters:general:1:4.1"
+    row = _agent_row("transport-matters:general:1:4.1")
+    assert row is not None
+    assert row["cwd"] == "/work/transport-matters"
+    assert _agent_row("memories:general:1:4.1") is None
+
+
+def test_register_fallback_id_replaces_different_process_in_same_pane():
+    """A new runtime process may reuse a pane for a different project."""
+    from server.services import agent_registry
+
+    _seed_agent(
+        "transport-matters:general:1:4.1",
+        tmux_target="1:4.1",
+        pane_id="%432",
+        cwd="/work/transport-matters",
+        pid=42036,
+    )
+
+    result = agent_registry.register(
+        pwd="/work/cubicell",
+        tmux_target="1:4.1",
+        agent_id="cubicell:general:1:4.1",
+        session_id="new-session",
+        agent_type="general",
+        runtime="codex",
+        pane_id="%432",
+        profile=None,
+        pid=42037,
+        id_source="fallback",
+    )
+
+    assert result["agent_id"] == "cubicell:general:1:4.1"
+    assert _agent_row("transport-matters:general:1:4.1") is None
+    assert _agent_row("cubicell:general:1:4.1")["cwd"] == "/work/cubicell"
 
 
 def test_register_disambiguates_when_id_claimed_by_live_pane(monkeypatch):

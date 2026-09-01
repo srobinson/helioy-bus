@@ -65,10 +65,17 @@ class TmuxGateway:
         """Return True if the current process is running inside a tmux session."""
         return bool(os.environ.get("TMUX"))
 
-    def current_session_name(self) -> str | None:
-        """Return the active tmux session name, or None if not inside tmux."""
+    def current_session_name(self, pane: str = "") -> str | None:
+        """Return a tmux session name, or None if it cannot be resolved.
+
+        With ``pane`` (a ``%N`` id or any tmux target) the answer is scoped
+        to that pane. Without it tmux answers for whichever session is
+        currently attached, which is only the caller's session by
+        coincidence.
+        """
+        target = ["-t", pane] if pane else []
         try:
-            return self._run("display-message", "-p", "#{session_name}")
+            return self._run("display-message", "-p", *target, "#{session_name}")
         except RuntimeError:
             return None
 

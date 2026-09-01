@@ -60,10 +60,11 @@ PWD_EFFECTIVE="$(_identity_project_dir)"
 SESSION_ID=$(echo "$STDIN_JSON" | jq -r '.session_id // empty' 2>/dev/null || true)
 SESSION_ID="${SESSION_ID:-${HELIOY_SESSION_ID:-${CLAUDE_SESSION_ID:-}}}"
 
-# Write PID → agent_id mapping so hooks and server tools can self-identify
+# The registration helper publishes the PID mapping after identity continuity
+# resolves. Never write the shell resolver's provisional identity here: a
+# failed registration would leave mail sender resolution pointing at an agent
+# id that does not exist in the registry.
 PIDS_DIR="$BUS_DIR/pids"
-mkdir -p "$PIDS_DIR"
-echo "$AGENT_ID" > "$PIDS_DIR/$PPID"
 
 # Derive the helioy-bus repo root so server._db is importable.
 # BASH_SOURCE resolution follows symlinks to the real script location.

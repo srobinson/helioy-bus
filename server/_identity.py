@@ -211,6 +211,32 @@ def _lookup_agent_by_tmux(tmux_target: str) -> str:
     return row["agent_id"]
 
 
+def self_tmux_target() -> str:
+    """Return the caller's registered ``{session}:{window}.{pane}``, or ``""``.
+
+    The MCP server process is not always a tmux descendant: Codex spawns
+    stdio servers with an allowlist environment that drops ``TMUX`` and
+    ``TMUX_PANE``, so ``os.environ`` describes the server, never the
+    caller. ``_self_agent_id`` already resolves the caller across every
+    runtime; the registry row it names carries the authoritative target,
+    which reconciliation keeps current through window re-indexing.
+    """
+    agent_id = _self_agent_id()
+    if not agent_id:
+        return ""
+    try:
+        with _db.db() as conn:
+            row = conn.execute(
+                "SELECT tmux_target FROM agents WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+    except Exception:
+        return ""
+    if row is None:
+        return ""
+    return row["tmux_target"] or ""
+
+
 def _parent_pid(pid: int) -> int:
     """Return ``pid``'s parent pid via ``ps``, or ``0`` when unreachable."""
     try:

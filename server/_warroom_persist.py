@@ -13,23 +13,37 @@ import os
 import sqlite3
 
 from server import _db
+from server._identity import self_tmux_target
 from server._tmux import gateway
 
 
 def resolve_tmux_session() -> tuple[str | None, dict | None]:
-    """Require a live TMUX session and return its name.
+    """Return the tmux session the *calling agent* lives in.
 
-    Returns ``(session, None)`` when the caller is inside tmux and the
-    session name resolves, else ``(None, error_dict)``. Both spawn
-    paths share this preflight because a warroom cannot be created
-    outside tmux.
+    Returns ``(session, None)`` when the caller's session resolves, else
+    ``(None, error_dict)``. Both spawn paths share this preflight because
+    a warroom cannot be created outside tmux.
+
+    The registry is consulted before the environment. ``os.environ``
+    describes the MCP server process, which is only a tmux descendant by
+    accident of the host runtime: Codex strips ``TMUX``/``TMUX_PANE`` when
+    spawning stdio servers, so an env-only check reports "not inside tmux"
+    for a caller that plainly is. The registered ``tmux_target`` is also
+    caller-specific, where the env fallback can only name whichever
+    session is currently attached.
     """
+    target = self_tmux_target()
+    if target:
+        session, _, _ = target.partition(":")
+        if session:
+            return session, None
     if not os.environ.get("TMUX"):
         return None, {"error": "Not inside a tmux session. Warroom spawn requires tmux."}
-    session = gateway.current_session_name()
-    if session is None:
+    pane = os.environ.get("TMUX_PANE", "")
+    current_session = gateway.current_session_name(pane) if pane else gateway.current_session_name()
+    if current_session is None:
         return None, {"error": "Cannot determine tmux session"}
-    return session, None
+    return current_session, None
 
 
 def upsert_warroom(

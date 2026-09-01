@@ -62,3 +62,25 @@ def test_register_hook_does_not_block_on_open_stdin(isolated_bus):
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "{}"
     assert (isolated_bus / "pids" / str(os.getpid())).exists()
+
+
+def test_register_hook_does_not_publish_provisional_identity_on_failure(isolated_bus):
+    """A failed registration must not leave sender resolution pointing at
+    an identity that never reached the registry."""
+    env = _hook_env(
+        isolated_bus,
+        HELIOY_BUS_PYTHON="/does/not/exist/python",
+    )
+
+    result = subprocess.run(
+        ["bash", str(REGISTER_HOOK)],
+        input='{"session_id":"test-sid"}',
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "{}"
+    assert not (isolated_bus / "pids" / str(os.getpid())).exists()

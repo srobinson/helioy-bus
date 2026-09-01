@@ -188,7 +188,7 @@ def test_warroom_spawn_rejects_agent_not_in_selected_runtime(
     import server._tmux as tmux_mod
     import server.services.warroom as warroom_service
 
-    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda _pane="": "alp")
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
 
     result = warroom_service.spawn(
@@ -210,7 +210,7 @@ def test_warroom_spawn_uses_qualified_runtime_when_runtime_is_omitted(
     import server._tmux as tmux_mod
     import server.services.warroom as warroom_service
 
-    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda _pane="": "alp")
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
 
     spawned: list[tuple[str, str]] = []
@@ -280,7 +280,7 @@ def test_warroom_add_accepts_canonical_claude_name_for_codex(
     (fake_codex_instructions / "codebase-analyst.md").write_text(
         "You analyze local codebases.\n"
     )
-    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda _pane="": "alp")
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
 
     pane_counter = [0]

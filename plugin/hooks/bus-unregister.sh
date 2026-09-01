@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # bus-unregister.sh: SessionEnd hook for helioy-bus
 #
-# Removes this Claude Code instance from the bus registry on session end.
-# Uses direct DB writes. Claude is no longer active when SessionEnd fires.
+# Removes this runtime instance from the bus registry on session end.
+# Uses direct DB writes after Codex or Claude emits SessionEnd.
 # Gracefully no-ops if the registry does not exist.
-#
-# Configured in ~/.claude/settings.json as a SessionEnd hook.
 
 set -euo pipefail
 
@@ -32,18 +30,21 @@ if IFS= read -r -n 1 -t 1 _stdin_ch; then
 fi
 unset _stdin_ch
 REASON=$(echo "${STDIN_JSON:-{}}" | jq -r '.reason // empty' 2>/dev/null || true)
+SESSION_ID=$(echo "${STDIN_JSON:-{}}" | jq -r '.session_id // empty' 2>/dev/null || true)
 if [[ "$REASON" == "clear" || "$REASON" == "compact" ]]; then
     echo "{}"
     exit 0
 fi
 
-# Prefer PID file written at SessionStart (guaranteed to match the registered ID).
-# Fall back to shared identity resolution when no PID file is present.
+# Prefer the PID file written at SessionStart. When it is missing, the runtime
+# session id is the stable cleanup key and survives hook cwd changes. Identity
+# derivation is the final fallback for runtimes that provide neither.
 PID_FILE="$PIDS_DIR/$PPID"
+AGENT_ID=""
 if [[ -f "$PID_FILE" ]]; then
     AGENT_ID="$(cat "$PID_FILE")"
     rm -f "$PID_FILE"
-else
+elif [[ -z "$SESSION_ID" ]]; then
     HOOKS_LIB="$(dirname "$0")/lib/resolve-identity.sh"
     # shellcheck source=lib/resolve-identity.sh
     source "$HOOKS_LIB"
@@ -64,6 +65,7 @@ mkdir -p "$LOG_DIR"
 _py_stderr=$(
 _HELIOY_DB_PATH="$DB_PATH" \
 _HELIOY_AGENT_ID="$AGENT_ID" \
+_HELIOY_SESSION_ID="$SESSION_ID" \
 python3 - <<'PYEOF' 2>&1
 import sqlite3, os
 from pathlib import Path
@@ -74,7 +76,12 @@ if not db_path.exists():
 
 conn = sqlite3.connect(str(db_path), timeout=5)
 conn.execute("PRAGMA journal_mode=WAL;")
-conn.execute("DELETE FROM agents WHERE agent_id = ?", (os.environ["_HELIOY_AGENT_ID"],))
+agent_id = os.environ["_HELIOY_AGENT_ID"]
+session_id = os.environ["_HELIOY_SESSION_ID"]
+if agent_id:
+    conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
+elif session_id:
+    conn.execute("DELETE FROM agents WHERE session_id = ?", (session_id,))
 conn.commit()
 conn.close()
 PYEOF

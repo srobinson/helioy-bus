@@ -232,7 +232,7 @@ def test_warroom_spawn_records_runtime_from_adapter(monkeypatch):
         "_resolve_agent_type",
         lambda name, runtime_id=None: fake_agent if name in {"bar", "foo:bar"} else None,
     )
-    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda _pane="": "alp")
     monkeypatch.setattr(
         tmux_mod.gateway,
         "spawn_pane",
@@ -506,7 +506,7 @@ def test_warroom_spawn_repos_persists_requested_codex_runtime(monkeypatch, tmp_p
         (tmp_path / repo / ".git").mkdir(parents=True)
     monkeypatch.setenv("HELIOY_BASE", str(tmp_path))
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
-    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda _pane="": "alp")
     pane_counter = [0]
 
     def fake_spawn(**kw):
@@ -548,7 +548,7 @@ def test_warroom_spawn_repos_threads_runtime_to_spawn_pane(monkeypatch, tmp_path
     (tmp_path / "only-repo" / ".git").mkdir(parents=True)
     monkeypatch.setenv("HELIOY_BASE", str(tmp_path))
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
-    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda _pane="": "alp")
 
     captured: list[str | None] = []
 
@@ -573,7 +573,7 @@ def test_warroom_spawn_rejects_unknown_runtime(monkeypatch):
     import server._tmux as tmux_mod
     import server.services.warroom as warroom_service
 
-    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda _pane="": "alp")
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
 
     result = warroom_service.spawn(name="wr3", agents=["bar"], cwd="/tmp/r", runtime="nonexistent")
@@ -608,7 +608,7 @@ def test_warroom_spawn_accepts_codex_specialist_with_instruction_file(
     import server._tmux as tmux_mod
     import server.services.warroom as warroom_service
 
-    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda _pane="": "alp")
     monkeypatch.setenv("TMUX", "/tmp/tmux-sock")
     monkeypatch.setattr(
         tmux_mod.gateway,
@@ -682,7 +682,7 @@ def test_warroom_add_accepts_codex_specialist_with_instruction_file(
     )
     monkeypatch.setattr(warroom_agents, "_scan_agent_types", warroom_service._scan_agent_types)
     monkeypatch.setattr(warroom_agents, "_resolve_agent_type", warroom_service._resolve_agent_type)
-    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda: "alp")
+    monkeypatch.setattr(tmux_mod.gateway, "current_session_name", lambda _pane="": "alp")
 
     pane_counter = [0]
 

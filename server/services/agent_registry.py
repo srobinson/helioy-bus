@@ -33,8 +33,14 @@ def whoami(*, agent_id: str) -> dict:
     return result
 
 
-def _continuity_identity(conn, *, pane_id: str, pwd: str) -> tuple[str, str] | None:
-    """Return (agent_id, agent_type) of the existing row for this pane, if any.
+def _continuity_identity(
+    conn,
+    *,
+    pane_id: str,
+    pwd: str,
+    pid: int,
+) -> tuple[str, str, str] | None:
+    """Return the existing identity and project cwd for this runtime, if any.
 
     A pane's stable %N id is the identity anchor. When a registration
     arrives with a weak identity (address-minted fallback, or no id at
@@ -45,19 +51,24 @@ def _continuity_identity(conn, *, pane_id: str, pwd: str) -> tuple[str, str] | N
     birth-address id and silently steal its row (identity takeover,
     reproduced live 2026-07-09).
 
-    Guarded on cwd equality: a pane relaunched from a different project
-    is a new agent, not a continuation.
+    A matching runtime pid proves continuity even if a hook runs from a
+    different directory. Codex memories hooks do exactly that. Preserve
+    the original project cwd with the identity so the observational row
+    remains truthful. A pane relaunched from another project under a new
+    process is a new agent.
     """
     if not pane_id:
         return None
     row = conn.execute(
-        "SELECT agent_id, agent_type, cwd FROM agents WHERE pane_id = ? "
+        "SELECT agent_id, agent_type, cwd, pid FROM agents WHERE pane_id = ? "
         "ORDER BY last_seen DESC LIMIT 1",
         (pane_id,),
     ).fetchone()
-    if row is None or row["cwd"] != pwd:
+    if row is None:
         return None
-    return row["agent_id"], row["agent_type"]
+    if row["cwd"] != pwd and row["pid"] != pid:
+        return None
+    return row["agent_id"], row["agent_type"], row["cwd"]
 
 
 def register(
@@ -107,9 +118,14 @@ def register(
 
     with _db.db() as conn:
         if not agent_id or id_source == "fallback":
-            reused = _continuity_identity(conn, pane_id=pane_id, pwd=pwd)
+            reused = _continuity_identity(
+                conn,
+                pane_id=pane_id,
+                pwd=pwd,
+                pid=parent_pid,
+            )
             if reused is not None:
-                agent_id, agent_type = reused
+                agent_id, agent_type, pwd = reused
         if not agent_id:
             agent_id = canonical_agent_id(pwd, agent_type, tmux_target)
 
