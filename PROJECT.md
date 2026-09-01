@@ -304,7 +304,7 @@ compatible fields rather than active behavior knobs.
 
 ## Dependencies
 
-- **mcp[cli]** (>=1.0.0): MCP protocol SDK, provides FastMCP server framework
-- **mcp-hmr**: Hot module reload support for MCP servers (used by proxy.py, pulls in watchfiles)
+- **mcp[cli]** (>=2.1.1): MCP protocol SDK, provides the MCPServer framework
+- **watchfiles** (>=1.1.1): File watching for the repository's hot reload proxy
 
 Dev dependencies: ruff, mypy, pytest, pytest-asyncio.

@@ -13,14 +13,14 @@ reads to their explicit reconciliation step.
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from server._identity import _self_agent_id
 from server.services import agent_registry, message, reconciliation
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
-mcp = FastMCP("helioy-bus")
+mcp = MCPServer("helioy-bus")
 
 # ── Registry tools ─────────────────────────────────────────────────────────────
 

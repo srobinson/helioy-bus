@@ -15,13 +15,13 @@ now invoked explicitly by the status handler.
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from server.services import reconciliation, warroom
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
-mcp = FastMCP("helioy-warroom")
+mcp = MCPServer("helioy-warroom")
 
 
 # ── Warroom MCP tools ─────────────────────────────────────────────────────────
